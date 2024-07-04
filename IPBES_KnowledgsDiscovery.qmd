@@ -1,0 +1,297 @@
+---
+title: Knowledge Discovery DRAFT
+subtitle: Knowledge Discovery based on the IPBES Assessments
+date: today
+author:
+  - name: Rainer M Krug 
+    id: rmk
+    orcid: 1234-1234-1234-1234
+    email: Rainer@krugs.de
+    affiliation: 
+      - name: University of Zürich
+        city: Zürich
+        state: ZH
+        url: www.uzh.ch
+    roles: [author, editor]
+  - name: CCC DDD
+    id: cd
+    orcid: 2345-2345-2345-2345
+    email: bbb@ccc.dd
+    affiliation: 
+      - name: Another Great Institute
+        city: Providence
+        state: RI
+        url: www.brown.edu
+abstract: > 
+  The assessments Linked Open Data is used to conduct analysis and searches 
+  to discover new knowledge related to the assessmwents.
+# keywords:
+#   - aaaaa
+#   - bbbbb
+license: "CC BY"
+copyright: 
+  holder: No idea
+  year: 2023
+citation: 
+  type: report
+  doi: xxxxxxxxxxxxxx
+doi: xxxxxxxxxxxxxx4
+version: 0.0.1
+
+format:
+    html:
+        toc: true
+        toc-depth: 4
+        toc_expand: true
+        embed-resources: true
+        code-fold: true
+        code-summary: 'Show the code'
+        keep-md: true
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+
+```
+
+# Introduction
+IPBES assessments were converted / enhanced into [Linked Open Data (LOD)](https://github.com/IPBES-Data/IPBES_LOD) using the ttl format. 
+
+Three assessments available in ttl format are currently:
+
+- the [First Global Assessment](https://github.com/IPBES-Data/IPBES_LOD/blob/main/Global%20Assessment%201/README_GA1.md) (GA1)
+- the [Values Assessment](https://github.com/IPBES-Data/IPBES_LOD/tree/main/Values%20Assessment) (VA)
+- the [Invasive Alien Species Assessment](https://github.com/IPBES-Data/IPBES_LOD/tree/main/Invasive%20Alien%20Species%20Assessment) (IAS).
+
+# Methods
+
+```{r}
+#| label: load_refs
+
+fn <- file.path("output", "key_works.rds")
+if (!file.exists(fn)) {
+    refs_file <- file.path("input", "GA1_BackgroundMessage_Reference_Snowball for GA2_V1.csv")
+
+    refs <- refs_file |>
+        read.csv(
+            header = TRUE,
+            sep = ",",
+            quote = "\"",
+            stringsAsFactors = FALSE
+        ) |>
+        dplyr::mutate(
+            bm = gsub("http://ontology.ipbes.net/report/bgm/", "", Background.Message),
+            Background.Message = NULL,
+            doi = gsub("https://doi.org/", "", doi),
+            X = NULL
+        ) |>
+        dplyr::select(
+            bm,
+            zotero,
+            doi
+        ) |>
+        tibble::as_tibble()
+
+    key_works <- openalexR::oa_fetch(
+        entity = "works",
+        doi = refs$doi[refs$doi != ""] |> unique(),
+        options = list(
+            # select = c(
+            #     "id",
+            #     "doi"
+            # )
+        ),
+        verbose = TRUE
+    )
+
+    refs$doi <- ifelse(
+        refs$doi == "",
+        as.character(NA),
+        paste0("https://doi.org/", refs$doi)
+    )
+
+    key_works <- refs |>
+        dplyr::distinct() |>
+        dplyr::left_join(
+            y = key_works,
+            by = "doi"
+        ) |>
+        saveRDS(
+            file = fn
+        )
+}
+
+key_works <- readRDS(fn)
+key_works <- split(key_works, f = key_works$bm)
+
+
+key_works |>
+    lapply(
+        function(bm) {
+            fn <- file.path("output", paste0("bm_", bm$bm[1], "_snowball.rds"))
+            if (file.exists(fn)) {
+                message("Skippig ", which(bm$bm[[1]] == names(key_works)), " of ", length(key_works), " : ", bm$bm[1], " - file exists")
+                invisible(return(NULL))
+            } else {
+                message("Processing ", which(bm$bm[[1]] == names(key_works)), " of ", length(key_works), " : ", bm$bm[1])
+
+                bm <- bm |> dplyr::filter(
+                    !is.na(id)
+                )
+
+                if (nrow(bm) == 0) {
+                    result <- list(
+                        nodes = tibble::tibble(
+                            id = character(0),
+                        ),
+                        edges = tibble::tibble(
+                            from = character(0),
+                            to = character(0)
+                        )
+                    ) |>
+                        saveRDS(file = fn)
+
+                    invisible(return(NULL))
+                }
+
+                ## determine works referenced by key_works
+                referenced <- bm$referenced_works
+                num_from <- sapply(referenced, length)
+                referenced <- tibble::tibble(
+                    from = unlist(referenced),
+                    to = rep(bm$id, num_from)
+                )
+                referenced <- referenced[!is.na(referenced$from), ]
+                referenced <- referenced[!is.na(referenced$to), ]
+
+                ## determine works citing key_works
+                citing <- bm$cited_by_api_url
+                citing <- pbapply::pblapply(
+                    citing,
+                    function(url) {
+                        if (is.na(url)) {
+                            result <- NULL
+                        } else {
+                            result <- openalexR::oa_request(
+                                query_url = paste0(url, "&select=id, publication_year"),
+                                verbose = FALSE
+                            )
+                            if (length(result) == 0) {
+                                result <- NULL
+                            } else {
+                                result <- openalexR::works2df(
+                                    result,
+                                    verbose = FALSE
+                                ) |>
+                                    dplyr::mutate(
+                                        from = gsub("works\\?filter=cites\\:", "", url)
+                                    ) |>
+                                    dplyr::select(
+                                        from,
+                                        to = id,
+                                        publication_year
+                                    )
+                            }
+                        }
+                        return(result)
+                    }
+                )
+
+                citing <- citing[sapply(citing, length) > 0] |>
+                    dplyr::bind_rows()
+
+                ## assemble edges
+                edges <- dplyr::bind_rows(referenced, citing) |>
+                    dplyr::select(
+                        from,
+                        to
+                    ) |>
+                    dplyr::distinct()
+
+                ## assemble nodes
+                nodes <- tibble::tibble(
+                    id = unlist(edges, use.names = FALSE) |>
+                        unique()
+                ) |>
+                    dplyr::left_join(
+                        y = bm,
+                        by = c("id" = "id")
+                    ) |>
+                    dplyr::arrange(
+                        zotero
+                    )
+
+
+                ## combine everything
+                result <- list(
+                    nodes = nodes,
+                    edges = edges
+                )
+
+                ## write rds file
+                saveRDS(result, file = fn)
+
+                invisible(return(NULL))
+            }
+        }
+    ) |>
+    invisible()
+
+```
+
+
+The following DOIS are wrong: `10.1016/j.ecolmodel.2017,04.005` should be `10.1016/j.ecolmodel.2017.04.005`
+
+## Snowball search for Background Messages
+
+```{r}
+kws <- split(dplyr::collect(key_works), f = refs$background.message)
+
+# Calculate the number of rows for each element in the list
+num_rows <- sapply(kws, nrow)
+
+# Order the list by the number of rows
+kws <- kws[order(num_rows)]
+
+kws |>
+    lapply(
+        function(kw) {
+            fn <- file.path("output", paste0("snowball_bm_", strsplit(kw$background.message[1], split = "-")[[1]][[2]], ".rds"))
+            ids <- unique(kw$id[!is.na(kw$id)])
+            message("\n#########\nCreating from ", length(ids), " ids file ", fn, "\n#########\n")
+            if (file.exists(fn)) {
+                return(NULL)
+            }
+            if (((!is.na(kw$id)) |> sum()) > 0) {
+                result <- openalexR::oa_snowball(
+                    identifier = ids,
+                    verbose = TRUE
+                )
+            } else {
+                result <- NULL
+            }
+            saveRDS(result, file = fn)
+        }
+    )
+```
+
+
+# Results
+## Some stats
+
+Number of references per background message
+
+```{r}
+refs |>
+    dplyr::group_by(
+        background.message
+    ) |>
+    dplyr::summarise(
+        n = dplyr::n()
+    ) |>
+    knitr::kable()
+```
+
+More can be done.
