@@ -43,17 +43,24 @@ format:
         toc: true
         toc-depth: 4
         toc_expand: true
-        embed-resources: true
+        embed-resources: false
         code-fold: true
         code-summary: 'Show the code'
-        keep-md: true
+        keep-md: false
 ---
 
 ```{r}
 #| label: setup
 #| include: false
 
+library(openalexR)
+library(dplyr)
+library(arrow)
+library(ggplot2)
 
+library(IPBES.R)
+
+library(tictoc)
 ```
 
 # Introduction
@@ -67,231 +74,436 @@ Three assessments available in ttl format are currently:
 
 # Methods
 
+## Manuak fixes to ref list
+
+The following DOIS are wrong in the original csv and were corrected manually: `10.1016/j.ecolmodel.2017,04.005` should be `10.1016/j.ecolmodel.2017.04.005`
+
+## Import References and get OpenAlex Works 
+
 ```{r}
-#| label: load_refs
+#| label: load_key_works
 
 fn <- file.path("output", "key_works.rds")
 if (!file.exists(fn)) {
-    refs_file <- file.path("input", "GA1_BackgroundMessage_Reference_Snowball for GA2_V1.csv")
+  refs_file <- file.path("input", "GA1_BackgroundMessage_Reference_Snowball for GA2_V1.csv")
 
-    refs <- refs_file |>
-        read.csv(
-            header = TRUE,
-            sep = ",",
-            quote = "\"",
-            stringsAsFactors = FALSE
-        ) |>
-        dplyr::mutate(
-            bm = gsub("http://ontology.ipbes.net/report/bgm/", "", Background.Message),
-            Background.Message = NULL,
-            doi = gsub("https://doi.org/", "", doi),
-            X = NULL
-        ) |>
-        dplyr::select(
-            bm,
-            zotero,
-            doi
-        ) |>
-        tibble::as_tibble()
+  refs <- refs_file |>
+    read.csv(
+      header = TRUE,
+      sep = ",",
+      quote = "\"",
+      stringsAsFactors = FALSE
+    ) |>
+    dplyr::mutate(
+      bm = gsub("http://ontology.ipbes.net/report/bgm/", "", Background.Message),
+      Background.Message = NULL,
+      doi = gsub("https://doi.org/", "", doi),
+      X = NULL
+    ) |>
+    dplyr::select(
+      bm,
+      zotero,
+      doi
+    ) |>
+    tibble::as_tibble()
 
-    key_works <- openalexR::oa_fetch(
-        entity = "works",
-        doi = refs$doi[refs$doi != ""] |> unique(),
-        options = list(
-            # select = c(
-            #     "id",
-            #     "doi"
-            # )
-        ),
-        verbose = TRUE
+  key_works <- openalexR::oa_fetch(
+    entity = "works",
+    doi = refs$doi[refs$doi != ""] |> unique(),
+    options = list(
+      # select = c(
+      #     "id",
+      #     "doi",
+      #     "authorships",
+      #     "abstract_inverted_index",
+      #     "publication_year"
+      # )
+    ),
+    verbose = TRUE
+  )
+
+  refs$doi <- ifelse(
+    refs$doi == "",
+    as.character(NA),
+    paste0("https://doi.org/", refs$doi)
+  )
+
+  refs |>
+    dplyr::distinct() |>
+    dplyr::left_join(
+      y = key_works,
+      by = "doi"
+    ) |>
+    saveRDS(
+      file = fn
     )
-
-    refs$doi <- ifelse(
-        refs$doi == "",
-        as.character(NA),
-        paste0("https://doi.org/", refs$doi)
-    )
-
-    key_works <- refs |>
-        dplyr::distinct() |>
-        dplyr::left_join(
-            y = key_works,
-            by = "doi"
-        ) |>
-        saveRDS(
-            file = fn
-        )
 }
 
 key_works <- readRDS(fn)
-key_works <- split(key_works, f = key_works$bm)
-
-
-key_works |>
-    lapply(
-        function(bm) {
-            fn <- file.path("output", paste0("bm_", bm$bm[1], "_snowball.rds"))
-            if (file.exists(fn)) {
-                message("Skippig ", which(bm$bm[[1]] == names(key_works)), " of ", length(key_works), " : ", bm$bm[1], " - file exists")
-                invisible(return(NULL))
-            } else {
-                message("Processing ", which(bm$bm[[1]] == names(key_works)), " of ", length(key_works), " : ", bm$bm[1])
-
-                bm <- bm |> dplyr::filter(
-                    !is.na(id)
-                )
-
-                if (nrow(bm) == 0) {
-                    result <- list(
-                        nodes = tibble::tibble(
-                            id = character(0),
-                        ),
-                        edges = tibble::tibble(
-                            from = character(0),
-                            to = character(0)
-                        )
-                    ) |>
-                        saveRDS(file = fn)
-
-                    invisible(return(NULL))
-                }
-
-                ## determine works referenced by key_works
-                referenced <- bm$referenced_works
-                num_from <- sapply(referenced, length)
-                referenced <- tibble::tibble(
-                    from = unlist(referenced),
-                    to = rep(bm$id, num_from)
-                )
-                referenced <- referenced[!is.na(referenced$from), ]
-                referenced <- referenced[!is.na(referenced$to), ]
-
-                ## determine works citing key_works
-                citing <- bm$cited_by_api_url
-                citing <- pbapply::pblapply(
-                    citing,
-                    function(url) {
-                        if (is.na(url)) {
-                            result <- NULL
-                        } else {
-                            result <- openalexR::oa_request(
-                                query_url = paste0(url, "&select=id, publication_year"),
-                                verbose = FALSE
-                            )
-                            if (length(result) == 0) {
-                                result <- NULL
-                            } else {
-                                result <- openalexR::works2df(
-                                    result,
-                                    verbose = FALSE
-                                ) |>
-                                    dplyr::mutate(
-                                        from = gsub("works\\?filter=cites\\:", "", url)
-                                    ) |>
-                                    dplyr::select(
-                                        from,
-                                        to = id,
-                                        publication_year
-                                    )
-                            }
-                        }
-                        return(result)
-                    }
-                )
-
-                citing <- citing[sapply(citing, length) > 0] |>
-                    dplyr::bind_rows()
-
-                ## assemble edges
-                edges <- dplyr::bind_rows(referenced, citing) |>
-                    dplyr::select(
-                        from,
-                        to
-                    ) |>
-                    dplyr::distinct()
-
-                ## assemble nodes
-                nodes <- tibble::tibble(
-                    id = unlist(edges, use.names = FALSE) |>
-                        unique()
-                ) |>
-                    dplyr::left_join(
-                        y = bm,
-                        by = c("id" = "id")
-                    ) |>
-                    dplyr::arrange(
-                        zotero
-                    )
-
-
-                ## combine everything
-                result <- list(
-                    nodes = nodes,
-                    edges = edges
-                )
-
-                ## write rds file
-                saveRDS(result, file = fn)
-
-                invisible(return(NULL))
-            }
-        }
-    ) |>
-    invisible()
-
 ```
 
-
-The following DOIS are wrong: `10.1016/j.ecolmodel.2017,04.005` should be `10.1016/j.ecolmodel.2017.04.005`
-
-## Snowball search for Background Messages
+## Run Snowball Searches for all BMs individually
 
 ```{r}
-kws <- split(dplyr::collect(key_works), f = refs$background.message)
+#| label: snowball_search
 
-# Calculate the number of rows for each element in the list
-num_rows <- sapply(kws, nrow)
+tic()
+split(key_works, f = key_works$bm) |>
+  lapply(
+    function(bm) {
+      tic()
+      fn <- file.path("output", paste0("bm_", bm$bm[1], "_snowball.rds"))
+      b_mes <- bm$bm[[1]]
+      if (file.exists(fn)) {
+        message("Skippig ", which(b_mes == names(key_works)), " of ", length(key_works), " : ", b_mes, " - file exists")
+        toc()
+        invisible(return(NULL))
+      } else {
+        message("Processing ", which(b_mes == names(key_works)), " of ", length(key_works), " : ", b_mes)
 
-# Order the list by the number of rows
-kws <- kws[order(num_rows)]
+        bm <- bm |> dplyr::filter(
+          !is.na(id)
+        )
 
-kws |>
-    lapply(
-        function(kw) {
-            fn <- file.path("output", paste0("snowball_bm_", strsplit(kw$background.message[1], split = "-")[[1]][[2]], ".rds"))
-            ids <- unique(kw$id[!is.na(kw$id)])
-            message("\n#########\nCreating from ", length(ids), " ids file ", fn, "\n#########\n")
-            if (file.exists(fn)) {
-                return(NULL)
-            }
-            if (((!is.na(kw$id)) |> sum()) > 0) {
-                result <- openalexR::oa_snowball(
-                    identifier = ids,
-                    verbose = TRUE
-                )
-            } else {
-                result <- NULL
-            }
-            saveRDS(result, file = fn)
+        if (nrow(bm) == 0) {
+          result <- list(
+            nodes = tibble::tibble(
+              id = character(0),
+            ),
+            edges = tibble::tibble(
+              from = character(0),
+              to = character(0)
+            )
+          ) |>
+            saveRDS(file = fn)
+
+          toc()
+          invisible(return(NULL))
         }
-    )
+
+        ## determine works referenced by key_works
+        referenced <- bm$referenced_works
+        num_from <- sapply(referenced, length)
+        referenced <- tibble::tibble(
+          from = rep(bm$id, num_from),
+          to = unlist(referenced)
+        )
+        referenced <- referenced[!is.na(referenced$from), ]
+        referenced <- referenced[!is.na(referenced$to), ]
+
+        ## determine works citing key_works
+        citing <- bm$cited_by_api_url
+        citing <- pbapply::pblapply(
+          citing,
+          function(url) {
+            if (is.na(url)) {
+              result <- NULL
+            } else {
+              result <- openalexR::oa_request(
+                query_url = paste0(url, "&select=id,doi,authorships,abstract_inverted_index,publication_year"),
+                verbose = FALSE
+              )
+              if (length(result) == 0) {
+                result <- NULL
+              } else {
+                result <- openalexR::works2df(
+                  result,
+                  verbose = FALSE
+                ) |>
+                  dplyr::mutate(
+                    to = gsub("works\\?filter=cites\\:", "", url)
+                  ) |>
+                  dplyr::select(
+                    from = id,
+                    to,
+                    publication_year
+                  )
+              }
+            }
+            return(result)
+          }
+        )
+
+        citing <- citing[sapply(citing, length) > 0] |>
+          dplyr::bind_rows()
+
+        ## assemble edges
+        edges <- dplyr::bind_rows(referenced, citing) |>
+          dplyr::select(
+            from,
+            to
+          ) |>
+          dplyr::distinct()
+
+        ## assemble nodes
+        nodes <- tibble::tibble(
+          id = unlist(edges, use.names = FALSE)
+        ) |>
+          unique() |>
+          dplyr::left_join(
+            y = bm |>
+              dplyr::mutate(
+                oa_input = TRUE
+              ),
+            by = c("id" = "id")
+          ) |>
+          dplyr::left_join(
+            y = citing |>
+              dplyr::select(
+                id = from,
+                publication_year_citing = publication_year
+              ),
+            by = "id"
+          ) |>
+          dplyr::mutate(
+            publication_year = dplyr::coalesce(
+              publication_year,
+              publication_year_citing
+            ),
+            oa_input = dplyr::if_else(
+              is.na(oa_input),
+              FALSE,
+              TRUE
+            ),
+            bm = b_mes
+          ) |>
+          dplyr::mutate(
+            publication_year_citing = NULL
+          ) |>
+          tibble::as_tibble() |>
+          dplyr::arrange(
+            zotero
+          )
+
+        ## combine everything
+        result <- list(
+          nodes = nodes,
+          edges = edges
+        )
+
+        ## write rds file
+        saveRDS(result, file = fn)
+        toc()
+        invisible(return(NULL))
+      }
+    }
+  ) |>
+  invisible()
+toc()
+```
+
+## Convert to Parquet Database
+
+```{r}
+#| label: convert_to_parquet
+#|
+
+path_nodes <- file.path("output", "nodes")
+path_edges <- file.path("output", "edges")
+
+if (!(dir.exists(path_nodes) & dir.exists(path_edges))) {
+  tic()
+  list.files(
+    path = "output",
+    pattern = "bm_.*_snowball.rds",
+    full.names = TRUE
+  ) |>
+    lapply(
+      function(fn) {
+        b_mes <- basename(fn) |>
+          gsub(pattern = "^bm_", replacement = "", ) |>
+          gsub(pattern = "_snowball\\.rds$", replacement = "")
+        message("Processing ", b_mes)
+        data <- readRDS(fn)
+
+        ## save nodes
+        if (nrow(data$nodes) > 0) {
+          message("  nodes")
+          tic()
+          data$nodes$author <- IPBES.R::abbreviate_authors(data$nodes)
+          arrow::write_dataset(
+            dataset = data$nodes |>
+              dplyr::select(
+                id,
+                author,
+                title,
+                publication_year,
+                ab,
+                doi,
+                zotero,
+                oa_input
+              ) |>
+              dplyr::mutate(
+                bm = b_mes
+              ),
+            path = path_nodes,
+            format = "parquet",
+            partitioning = c("bm"),
+            existing_data_behavior = "delete_matching"
+          )
+          toc()
+        }
+
+        ## save edges
+        if (nrow(data$edges) > 0) {
+          message("  edges")
+          tic()
+          arrow::write_dataset(
+            dataset = data$edges |>
+              dplyr::mutate(
+                bm = b_mes
+              ),
+            path = path_edges,
+            format = "parquet",
+            partitioning = c("bm"),
+            existing_data_behavior = "delete_matching"
+          )
+          toc()
+        }
+      }
+    ) |>
+    invisible()
+  toc()
+}
+
+nodes <- arrow::open_dataset(
+  sources = path_nodes
+)
+
+edges <- arrow::open_dataset(
+  sources = path_edges
+)
 ```
 
 
-# Results
-## Some stats
+## Extract number of references per background message per year
 
+```{r}
+#| label: refs_per_year
+
+refs_per_year <- nodes |>
+  dplyr::group_by(
+    bm,
+    publication_year
+  ) |>
+  dplyr::summarise(
+    n = dplyr::n()
+  )
+```
+
+## Figures
+
+### Publications per year
+
+```{r}
+#| label: fig_pub_per_year
+#|
+
+figname <- file.path("figures", "fig_pub_per_year")
+
+if (length(list.files("figures", "fig_pub_per_year")) < 2) {
+  fig <- refs_per_year |>
+    dplyr::collect() |>
+    ggplot(
+      aes(
+        x = publication_year,
+        y = n,
+        group = bm,
+        color = bm
+      )
+    ) +
+    geom_line() +
+    geom_point() +
+    geom_vline(
+      xintercept = 2019,
+      linetype = "dashed"
+    ) +
+    theme_minimal() +
+    labs(
+      title = "Number of New Publications per Year by Background Message",
+      x = "Publication Year",
+      y = "Number of Publications",
+      color = "Background Message"
+    ) +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank()
+    ) +
+    xlim(2000, 2025) +
+    scale_y_log10()
+
+  ggplot2::ggsave(
+    filename = paste0(figname, ".png"),
+    plot = fig,
+    width = 10,
+    height = 6
+  )
+  ggplot2::ggsave(
+    filename = paste0(figname, ".pdf"),
+    plot = fig,
+    width = 10,
+    height = 6
+  )
+  ggplot2::ggsave(
+    filename = paste0(figname, ".svg"),
+    plot = fig,
+    width = 10,
+    height = 6
+  )
+}
+```
+
+# Results
+
+## Publications per year
+
+![](figures/fig_pub_per_year.png)
+
+- [Download `png`](figures/fig_pub_per_year.png)
+- [Download `pdf`](figures/fig_pub_per_year.pdf)
+- [Download `svg`](figures/fig_pub_per_year.svg)
+
+## Number of publications after 2018
+
+```{r}
+#| label: count_before_after_2018
+#|
+
+nodes |>
+  dplyr::group_by(
+    bm,
+    publication_year
+  ) |>
+  dplyr::summarise(
+    n = dplyr::n()
+  ) |>
+  dplyr::mutate(
+    period = dplyr::case_when(
+      publication_year <= 2018 ~ "Before 2018",
+      publication_year > 2018 ~ "After 2018",
+      TRUE ~ NA_character_
+    )
+  ) |>
+  dplyr::group_by(
+    bm,
+    period
+  ) |>
+  dplyr::summarise(
+    total_publications = sum(n)
+  ) |>
+  dplyr::collect() |>
+  tidyr::pivot_wider(
+    names_from = period,
+    values_from = total_publications,
+    values_fill = 0
+  ) |>
+  IPBES.R::table_dt()
+```
+
+## All Publications
 Number of references per background message
 
 ```{r}
-refs |>
-    dplyr::group_by(
-        background.message
-    ) |>
-    dplyr::summarise(
-        n = dplyr::n()
-    ) |>
-    knitr::kable()
 ```
 
 More can be done.
