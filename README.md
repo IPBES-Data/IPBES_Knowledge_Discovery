@@ -10,4 +10,4 @@ We use snowballing to identify the literature. The key-papers are the publicatio
 
 ## Reports
 
-- [Knowledge Discovery using Snowballing](IPBES_KnowledgDiscovery.htm)
+- [Knowledge Discovery using Snowballing](IPBES_KnowledgsDiscovery.html)
