@@ -8,7 +8,7 @@
 
 <meta name="author" content="Rainer M Krug">
 <meta name="author" content="CCC DDD">
-<meta name="dcterms.date" content="2024-07-05">
+<meta name="dcterms.date" content="2024-07-08">
 
 <title>Knowledge Discovery DRAFT</title>
 <style>
@@ -107,7 +107,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
   <li><a href="#introduction" id="toc-introduction" class="nav-link active" data-scroll-target="#introduction">Introduction</a></li>
   <li><a href="#methods" id="toc-methods" class="nav-link" data-scroll-target="#methods">Methods</a>
   <ul>
-  <li><a href="#manuak-fixes-to-ref-list" id="toc-manuak-fixes-to-ref-list" class="nav-link" data-scroll-target="#manuak-fixes-to-ref-list">Manuak fixes to ref list</a></li>
+  <li><a href="#manual-fixes-to-ref-list" id="toc-manual-fixes-to-ref-list" class="nav-link" data-scroll-target="#manual-fixes-to-ref-list">Manual fixes to ref list</a></li>
   <li><a href="#import-references-and-get-openalex-works" id="toc-import-references-and-get-openalex-works" class="nav-link" data-scroll-target="#import-references-and-get-openalex-works">Import References and get OpenAlex Works</a></li>
   <li><a href="#run-snowball-searches-for-all-bms-individually" id="toc-run-snowball-searches-for-all-bms-individually" class="nav-link" data-scroll-target="#run-snowball-searches-for-all-bms-individually">Run Snowball Searches for all BMs individually</a></li>
   <li><a href="#convert-to-parquet-database" id="toc-convert-to-parquet-database" class="nav-link" data-scroll-target="#convert-to-parquet-database">Convert to Parquet Database</a></li>
@@ -167,7 +167,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
     <div>
     <div class="quarto-title-meta-heading">Published</div>
     <div class="quarto-title-meta-contents">
-      <p class="date">July 5, 2024</p>
+      <p class="date">July 8, 2024</p>
     </div>
   </div>
   
@@ -205,8 +205,8 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="methods" class="level1">
 <h1>Methods</h1>
-<section id="manuak-fixes-to-ref-list" class="level2">
-<h2 class="anchored" data-anchor-id="manuak-fixes-to-ref-list">Manuak fixes to ref list</h2>
+<section id="manual-fixes-to-ref-list" class="level2">
+<h2 class="anchored" data-anchor-id="manual-fixes-to-ref-list">Manual fixes to ref list</h2>
 <p>The following DOIS are wrong in the original csv and were corrected manually: <code>10.1016/j.ecolmodel.2017,04.005</code> should be <code>10.1016/j.ecolmodel.2017.04.005</code></p>
 </section>
 <section id="import-references-and-get-openalex-works" class="level2">
@@ -332,7 +332,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb2-51"><a href="#cb2-51" aria-hidden="true" tabindex="-1"></a>              result <span class="ot">&lt;-</span> <span class="cn">NULL</span></span>
 <span id="cb2-52"><a href="#cb2-52" aria-hidden="true" tabindex="-1"></a>            } <span class="cf">else</span> {</span>
 <span id="cb2-53"><a href="#cb2-53" aria-hidden="true" tabindex="-1"></a>              result <span class="ot">&lt;-</span> openalexR<span class="sc">::</span><span class="fu">oa_request</span>(</span>
-<span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a>                <span class="at">query_url =</span> <span class="fu">paste0</span>(url, <span class="st">"&amp;select=id,doi,authorships,abstract_inverted_index,publication_year"</span>),</span>
+<span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a>                <span class="at">query_url =</span> <span class="fu">paste0</span>(url, <span class="st">"&amp;select=id,doi,authorships,abstract_inverted_index,publication_year,type"</span>),</span>
 <span id="cb2-55"><a href="#cb2-55" aria-hidden="true" tabindex="-1"></a>                <span class="at">verbose =</span> <span class="cn">FALSE</span></span>
 <span id="cb2-56"><a href="#cb2-56" aria-hidden="true" tabindex="-1"></a>              )</span>
 <span id="cb2-57"><a href="#cb2-57" aria-hidden="true" tabindex="-1"></a>              <span class="cf">if</span> (<span class="fu">length</span>(result) <span class="sc">==</span> <span class="dv">0</span>) {</span>
@@ -426,7 +426,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>Skippig  of 40 : global19-A1 - file exists</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0 sec elapsed</code></pre>
+<pre><code>0.001 sec elapsed</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
 <pre><code>Skippig  of 40 : global19-A2 - file exists</code></pre>
@@ -492,13 +492,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>Skippig  of 40 : global19-B11 - file exists</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0.001 sec elapsed</code></pre>
+<pre><code>0 sec elapsed</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
 <pre><code>Skippig  of 40 : global19-B3 - file exists</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0 sec elapsed</code></pre>
+<pre><code>0.001 sec elapsed</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
 <pre><code>Skippig  of 40 : global19-B4 - file exists</code></pre>
@@ -570,13 +570,13 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <pre><code>Skippig  of 40 : global19-D10 - file exists</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0.001 sec elapsed</code></pre>
+<pre><code>0 sec elapsed</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
 <pre><code>Skippig  of 40 : global19-D11 - file exists</code></pre>
 </div>
 <div class="cell-output cell-output-stdout">
-<pre><code>0 sec elapsed</code></pre>
+<pre><code>0.001 sec elapsed</code></pre>
 </div>
 <div class="cell-output cell-output-stderr">
 <pre><code>Skippig  of 40 : global19-D12 - file exists</code></pre>
@@ -631,7 +631,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <div class="sourceCode cell-code" id="cb71"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb71-1"><a href="#cb71-1" aria-hidden="true" tabindex="-1"></a><span class="fu">toc</span>()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stdout">
-<pre><code>0.027 sec elapsed</code></pre>
+<pre><code>0.028 sec elapsed</code></pre>
 </div>
 </div>
 </section>
@@ -859,8 +859,8 @@ Warning: Invalid metadata$r</code></pre>
 Warning: Invalid metadata$r</code></pre>
 </div>
 <div class="cell-output-display">
-<div class="datatables html-widget html-fill-item" id="htmlwidget-a59d521a8e1abc3775c0" style="width:100%;height:auto;"></div>
-<script type="application/json" data-for="htmlwidget-a59d521a8e1abc3775c0">{"x":{"filter":"none","vertical":false,"extensions":["Buttons","FixedColumns","Scroller"],"data":[["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31","32"],["global19-A4","global19-A3","global19-A1","global19-A5","global19-A9","global19-A6","global19-A2","global19-C4","global19-C5","global19-C6","global19-A8","global19-B3","global19-B5","global19-C8","global19-D5","global19-B1","global19-D3","global19-D12","global19-D9","global19-D7","global19-B10","global19-C2","global19-D11","global19-D8","global19-B4","global19-C7","global19-D1","global19-A7","global19-B11","global19-D10","global19-D6","global19-D2"],[9773,49625,52280,40222,28300,34999,98988,2100,11494,43784,49707,31155,43703,24522,21681,6872,2545,27649,27267,36610,40590,10406,25417,41479,5516,24715,4013,7481,5571,12731,20004,1468],[17133,68324,69541,76128,24996,74014,147109,5135,20963,63787,55770,59263,44188,30417,34273,5139,5907,25050,24533,48229,24206,19497,30288,51345,28537,35552,7814,8408,6042,13385,30289,1907],[2049,7834,7178,10463,4266,8823,14717,1335,2331,10218,8036,7906,7384,7188,3571,188,1228,6002,3690,10393,4796,1642,3785,7377,210,4346,1672,1384,2292,2984,6878,475]],"container":"<table class=\"display\">\n  <thead>\n    <tr>\n      <th> <\/th>\n      <th>bm<\/th>\n      <th>Before 2018<\/th>\n      <th>After 2018<\/th>\n      <th>NA<\/th>\n    <\/tr>\n  <\/thead>\n<\/table>","options":{"dom":"Bfrtip","buttons":[{"extend":"csv","filename":"datatable"},{"extend":"excel","filename":"datatable"},{"extend":"pdf","filename":"datatable","orientation":"landscape","customize":"function(doc) {\n  doc.defaultStyle.fontSize = 5;\n}"},"print"],"scroller":true,"scrollY":"window.innerHeight * 0.7 + 'px'","scrollX":true,"fixedColumns":{"leftColumns":4},"columnDefs":[{"className":"dt-right","targets":[2,3,4]},{"orderable":false,"targets":0},{"name":" ","targets":0},{"name":"bm","targets":1},{"name":"Before 2018","targets":2},{"name":"After 2018","targets":3},{"name":"NA","targets":4}],"order":[],"autoWidth":false,"orderClasses":false}},"evals":["options.buttons.2.customize","options.scrollY"],"jsHooks":[]}</script>
+<div class="datatables html-widget html-fill-item" id="htmlwidget-7df2edf05605d268fe1c" style="width:100%;height:auto;"></div>
+<script type="application/json" data-for="htmlwidget-7df2edf05605d268fe1c">{"x":{"filter":"none","vertical":false,"extensions":["Buttons","FixedColumns","Scroller"],"data":[["1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19","20","21","22","23","24","25","26","27","28","29","30","31","32"],["global19-A4","global19-A1","global19-A5","global19-A6","global19-A2","global19-B3","global19-D11","global19-D5","global19-D7","global19-A3","global19-B11","global19-D6","global19-D8","global19-A9","global19-B10","global19-C8","global19-D9","global19-A8","global19-B4","global19-B5","global19-C7","global19-C6","global19-C4","global19-D1","global19-C5","global19-D12","global19-A7","global19-B1","global19-C2","global19-D2","global19-D10","global19-D3"],[9773,52280,40222,34999,98988,31155,25417,21681,36610,49625,5571,20004,41479,28300,40590,24522,27267,49707,5516,43703,24715,43784,2100,4013,11494,27649,7481,6872,10406,1468,12731,2545],[17133,69541,76128,74014,147109,59263,30288,34273,48229,68324,6042,30289,51345,24996,24206,30417,24533,55770,28537,44188,35552,63787,5135,7814,20963,25050,8408,5139,19497,1907,13385,5907],[2049,7178,10463,8823,14717,7906,3785,3571,10393,7834,2292,6878,7377,4266,4796,7188,3690,8036,210,7384,4346,10218,1335,1672,2331,6002,1384,188,1642,475,2984,1228]],"container":"<table class=\"display\">\n  <thead>\n    <tr>\n      <th> <\/th>\n      <th>bm<\/th>\n      <th>Before 2018<\/th>\n      <th>After 2018<\/th>\n      <th>NA<\/th>\n    <\/tr>\n  <\/thead>\n<\/table>","options":{"dom":"Bfrtip","buttons":[{"extend":"csv","filename":"datatable"},{"extend":"excel","filename":"datatable"},{"extend":"pdf","filename":"datatable","orientation":"landscape","customize":"function(doc) {\n  doc.defaultStyle.fontSize = 5;\n}"},"print"],"scroller":true,"scrollY":"window.innerHeight * 0.7 + 'px'","scrollX":true,"fixedColumns":{"leftColumns":4},"columnDefs":[{"className":"dt-right","targets":[2,3,4]},{"orderable":false,"targets":0},{"name":" ","targets":0},{"name":"bm","targets":1},{"name":"Before 2018","targets":2},{"name":"After 2018","targets":3},{"name":"NA","targets":4}],"order":[],"autoWidth":false,"orderClasses":false}},"evals":["options.buttons.2.customize","options.scrollY"],"jsHooks":[]}</script>
 </div>
 </div>
 </section>
@@ -874,7 +874,7 @@ Warning: Invalid metadata$r</code></pre>
 <div id="quarto-appendix" class="default"><section class="quarto-appendix-contents" id="quarto-reuse"><h2 class="anchored quarto-appendix-heading">Reuse</h2><div class="quarto-appendix-contents"><div><a rel="license" href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></div></div></section><section class="quarto-appendix-contents" id="quarto-citation"><h2 class="anchored quarto-appendix-heading">Citation</h2><div><div class="quarto-appendix-secondary-label">BibTeX citation:</div><pre class="sourceCode code-with-copy quarto-appendix-bibtex"><code class="sourceCode bibtex">@report{m_krug2024,
   author = {M Krug, Rainer and DDD, CCC},
   title = {Knowledge {Discovery} {DRAFT}},
-  date = {2024-07-05},
+  date = {2024-07-08},
   doi = {xxxxxxxxxxxxxx},
   langid = {en},
   abstract = {The assessments Linked Open Data is used to conduct

@@ -74,7 +74,7 @@ Three assessments available in ttl format are currently:
 
 # Methods
 
-## Manuak fixes to ref list
+## Manual fixes to ref list
 
 The following DOIS are wrong in the original csv and were corrected manually: `10.1016/j.ecolmodel.2017,04.005` should be `10.1016/j.ecolmodel.2017.04.005`
 
@@ -200,7 +200,7 @@ split(key_works, f = key_works$bm) |>
               result <- NULL
             } else {
               result <- openalexR::oa_request(
-                query_url = paste0(url, "&select=id,doi,authorships,abstract_inverted_index,publication_year"),
+                query_url = paste0(url, "&select=id,doi,authorships,abstract_inverted_index,publication_year,type"),
                 verbose = FALSE
               )
               if (length(result) == 0) {
