@@ -47,3 +47,9 @@ po/*~
 
 # RStudio Connect folder
 rsconnect/
+
+###
+output/snowballs/*
+output/nodes1/*
+output/edges1/*
+output/dois/*
