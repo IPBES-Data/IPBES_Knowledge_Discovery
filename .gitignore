@@ -50,6 +50,6 @@ rsconnect/
 
 ###
 output/snowballs/*
-output/nodes1/*
-output/edges1/*
+output/nodes/*
+output/edges/*
 output/dois/*
