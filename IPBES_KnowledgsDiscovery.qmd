@@ -13,15 +13,6 @@ author:
         state: ZH
         url: www.uzh.ch
     roles: [author, editor]
-  - name: CCC DDD
-    id: cd
-    orcid: 2345-2345-2345-2345
-    email: bbb@ccc.dd
-    affiliation: 
-      - name: Another Great Institute
-        city: Providence
-        state: RI
-        url: www.brown.edu
 abstract: > 
   The assessments Linked Open Data is used to conduct analysis and searches 
   to discover new knowledge related to the assessmwents.
@@ -29,9 +20,6 @@ abstract: >
 #   - aaaaa
 #   - bbbbb
 license: "CC BY"
-copyright: 
-  holder: No idea
-  year: 2023
 citation: 
   type: report
   doi: xxxxxxxxxxxxxx
@@ -64,6 +52,8 @@ library(arrow)
 library(ggplot2)
 
 library(IPBES.R)
+library(htmlwidgets)
+library(htmltools)
 
 library(tictoc)
 
@@ -432,100 +422,8 @@ if (length(list.files("figures", "fig_pub_per_year")) < 2) {
 }
 ```
 
-# Results
+## Overlap
 
-The dataset contains **`r key_works |> select(zotero) |> distinct() |> collect() |> nrow()`** paper referenced in the background messages. Out of these, **`r nodes |> filter(oa_input) |> select(id) |> distinct() |> collect() |> nrow()`** were usable for the snowball search and also yielded results.
-
-```{r}
-#| lebel: dada_table
-#| 
-
-nodes |>
-  dplyr::group_by(bm) |>
-  dplyr::summarise(
-    n = dplyr::n(),
-    n_key_paper = sum(oa_input == TRUE, na.rm = TRUE),
-    n_non_key_paper = sum(oa_input == FALSE, na.rm = TRUE),
-    n_nkp_pre_2018 = sum(((oa_input == FALSE) & (publication_year <= 2018)), na.rm = TRUE), # Count of papers with publication_year <= 2018
-    n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE) # Count of papers with publication_year > 2018
-  ) |>
-  dplyr::arrange(
-    bm
-  ) |>
-  dplyr::collect() |>
-  IPBES.R::table_dt()
-```
-
-## Publication types after 2018
-
-Here we show the different types of publication after 2018 as identified by the snowbal search. All Sub-background messages are grouped.
-
-
-```{r}
-#| label: publication_types_grouped
-#| echo: false
-
-
-nodes |>
-  dplyr::filter(
-    publication_year > 2018
-  ) |>
-  dplyr::select(
-    type
-    ) |>
-  dplyr::summarize(
-    n = n(),
-    .by = type
-  ) |>
-  dplyr::arrange(
-    dplyr::desc(n)
-  ) |>
-  dplyr::collect() |>
-  knitr::kable()
-```
-
-This table allows the filtering shows the number of work types per sub-background message. It allows filtering as well as sortu=ing and downloading.
-
-```{r}
-#| label: publication_types_non_grouped
-#| echo: false
-
-nodes |>
-  dplyr::filter(
-    publication_year > 2018
-  ) |>
-  dplyr::select(
-    bm,
-    type
-    ) |>
-  dplyr::summarize(
-    n = n(),
-    .by = c(type, bm)
-  ) |>
-  dplyr::arrange(
-    dplyr::desc(n)
-  ) |>
-  dplyr::collect() |>
-  IPBES.R::table_dt(
-    fixed_columns = NULL
-  )
-```
-## Publications per year
-
-![](figures/fig_pub_per_year.png)
-
-- [Download `png`](figures/fig_pub_per_year.png)
-- [Download `pdf`](figures/fig_pub_per_year.pdf)
-- [Download `svg`](figures/fig_pub_per_year.svg)
-
-## Overlap between background messages
-
-In this section we will look at the number of background messages in which a given paper, as identified by their OpenAlex id. We willlook at that separatr for key-papers and non key-papers.
-In the following tables only the papers which occur in more than one background message are included.
-
-### Key papers
-
-The key papers include al key papers.
 
 ```{r}
 #| label: key_paper_overlap
@@ -567,30 +465,33 @@ if (!file.exists(fn)) {
       title,
       doi,
       bms
-    ) |>
+    )
+    
     saveRDS(
+      overlap_keypapers,
       file = fn
+    )
+
+  overlap_keypapers |>
+    IPBES.R::table_dt(
+      fixedColumns = list(leftColumns = 2)
+    ) |>
+    htmlwidgets::saveWidget(
+      file = file.path("output", "key_paper_overlap.html"),
+      selfcontained = FALSE
     )
 }
 
-readRDS(fn) |>
-  IPBES.R::table_dt(
-    fixedColumns = list(leftColumns = 2)
-  )
 ```
 
-### All papers excluding Key Papers
-
-Here we are only interested in papers which were published after 2018, as we eant to discover new evidence.
-
 ```{r}
-#| label: non_key_paper_overlap
+#| label: after_2018_overlap
 #|
 
-fn <- file.path("output", "non_key_paper_overlap.rds")
+fn <- file.path("output", "after_2018_overlap.rds")
 
 if (!file.exists(fn)) {
-  overlap_non_keypapers <- nodes |>
+  after_2018_overlap <- nodes |>
     dplyr::filter(
       !oa_input,
       !is.na(id),
@@ -610,7 +511,7 @@ if (!file.exists(fn)) {
       desc(n)
     ) |>
     dplyr::filter(
-      n > 1,
+      n > 2,
       !is.na(id)
     ) |>
     dplyr::mutate(
@@ -624,18 +525,128 @@ if (!file.exists(fn)) {
       title,
       doi,
       bms
-    ) |>
+    )
+    
     saveRDS(
+      after_2018_overlap,
       file = fn
+    )
+
+  after_2018_overlap |>
+    IPBES.R::table_dt(
+      fixedColumns = list(leftColumns = 2)
+    ) |>
+    htmlwidgets::saveWidget(
+      file = file.path("output", "after_2018_overlap.html"),
+      selfcontained = FALSE
     )
 }
 
-readRDS(fn) |>
-  IPBES.R::table_dt(
-    fixedColumns = list(leftColumns = 2)
-  )
-
 ```
+
+# Results
+
+The dataset contains **`r key_works |> select(zotero) |> distinct() |> collect() |> nrow()`** paper referenced in the background messages. Out of these, **`r nodes |> filter(oa_input) |> select(id) |> distinct() |> collect() |> nrow()`** were usable for the snowball search and also yielded results.
+
+```{r}
+#| label: numbers_table
+#| 
+
+nodes |>
+  dplyr::group_by(bm) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    n_key_paper = sum(oa_input == TRUE, na.rm = TRUE),
+    n_non_key_paper = sum(oa_input == FALSE, na.rm = TRUE),
+    n_nkp_pre_2018 = sum(((oa_input == FALSE) & (publication_year <= 2018)), na.rm = TRUE), # Count of papers with publication_year <= 2018
+    n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE) # Count of papers with publication_year > 2018
+  ) |>
+  dplyr::arrange(
+    bm
+  ) |>
+  dplyr::collect() |>
+  IPBES.R::table_dt()
+```
+
+## Publication types after 2018
+
+Here we show the different types of publication after 2018 as identified by the snowbal search. All Sub-background messages are grouped.
+
+```{r}
+#| label: publication_types_grouped
+#| echo: false
+
+
+nodes |>
+  dplyr::filter(
+    publication_year > 2018
+  ) |>
+  dplyr::select(
+    type
+    ) |>
+  dplyr::summarize(
+    n = n(),
+    .by = type
+  ) |>
+  dplyr::arrange(
+    dplyr::desc(n)
+  ) |>
+  dplyr::collect() |>
+  knitr::kable()
+```
+
+This table allows the filtering shows the number of work types per sub-background message. It allows filtering as well as sorting and downloading.
+
+```{r}
+#| label: publication_types_non_grouped
+#| echo: false
+
+nodes |>
+  dplyr::filter(
+    publication_year > 2018
+  ) |>
+  dplyr::select(
+    bm,
+    type
+    ) |>
+  dplyr::summarize(
+    n = n(),
+    .by = c(type, bm)
+  ) |>
+  dplyr::arrange(
+    dplyr::desc(n)
+  ) |>
+  dplyr::collect() |>
+  IPBES.R::table_dt(
+    fixed_columns = NULL
+  )
+```
+## Publications per year
+
+![](figures/fig_pub_per_year.png)
+
+- [Download `png`](figures/fig_pub_per_year.png)
+- [Download `pdf`](figures/fig_pub_per_year.pdf)
+- [Download `svg`](figures/fig_pub_per_year.svg)
+
+## Overlap between background messages
+
+In this section we will look at the number of background messages in which a given paper, as identified by their OpenAlex id. We willlook at that separatr for key-papers and non key-papers.
+
+In the following tables only the papers which occur in more than one background message are included and only papers which were published after 2018.
+
+This overlap can have different causes. Either there is an overlap of the key-papers, ehich results in an overlap of the new publications, or there is a topical overlap betweent the new paper themselves. 
+
+The first table shows the overlap of the key-papers only.
+
+
+<iframe src="output/key_paper_overlap.html" width="100%" height="500px"></iframe>
+
+The second table shows the overlap of all papers after 2018.
+
+
+
+<iframe src="output/after_2018_overlap.html" width="100%" height="500px"></iframe>
 
 
 ```{r}
