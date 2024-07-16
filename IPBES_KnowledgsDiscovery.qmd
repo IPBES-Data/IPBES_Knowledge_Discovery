@@ -66,6 +66,25 @@ library(ggplot2)
 library(IPBES.R)
 
 library(tictoc)
+
+snowball <- function(backgroundMessage, collect = TRUE) {
+  result <- list(
+    nodes = nodes |>
+      dplyr::filter(
+        bm == backgroundMessage
+      ),
+    edges = edges |>
+      dplyr::filter(
+        bm == backgroundMessage
+      )
+  )
+  if (collect) {
+    result <- lapply(result, dplyr::collect)
+  }
+
+  return(result)
+}
+
 ```
 
 # Introduction
@@ -90,58 +109,58 @@ The following DOIS are wrong in the original csv and were corrected manually: `1
 
 fn <- file.path("output", "key_works.rds")
 if (!file.exists(fn)) {
-    refs_file <- file.path("input", "GA1_BackgroundMessage_Reference_Snowball for GA2_V1.csv")
+  refs_file <- file.path("input", "Query_Submessage_ref_GA.csv")
 
-    refs <- refs_file |>
-        read.csv(
-            header = TRUE,
-            sep = ",",
-            quote = "\"",
-            stringsAsFactors = FALSE
-        ) |>
-        dplyr::mutate(
-            bm = gsub("http://ontology.ipbes.net/report/bgm/", "", Background.Message),
-            Background.Message = NULL,
-            doi = gsub("https://doi.org/", "", doi),
-            X = NULL
-        ) |>
-        dplyr::select(
-            bm,
-            zotero,
-            doi
-        ) |>
-        tibble::as_tibble()
+  refs <- refs_file |>
+    read.csv(
+      header = TRUE,
+      sep = ",",
+      quote = "\"",
+      stringsAsFactors = FALSE
+    ) |>
+    dplyr::mutate(
+      bm = gsub("http://ontology.ipbes.net/report/subm/", "", Sub.Message),
+      Background.Message = NULL,
+      doi = gsub("https://doi.org/", "", doi),
+      X = NULL
+    ) |>
+    dplyr::select(
+      bm,
+      zotero,
+      doi
+    ) |>
+    tibble::as_tibble()
 
-    key_works <- openalexR::oa_fetch(
-        entity = "works",
-        doi = refs$doi[refs$doi != ""] |> unique(),
-        options = list(
-            # select = c(
-            #     "id",
-            #     "doi",
-            #     "authorships",
-            #     "abstract_inverted_index",
-            #     "publication_year"
-            # )
-        ),
-        verbose = TRUE
+  key_works <- openalexR::oa_fetch(
+    entity = "works",
+    doi = refs$doi[refs$doi != ""] |> unique(),
+    options = list(
+      # select = c(
+      #     "id",
+      #     "doi",
+      #     "authorships",
+      #     "abstract_inverted_index",
+      #     "publication_year"
+      # )
+    ),
+    verbose = TRUE
+  )
+
+  refs$doi <- ifelse(
+    refs$doi == "",
+    as.character(NA),
+    paste0("https://doi.org/", refs$doi)
+  )
+
+  refs |>
+    dplyr::distinct() |>
+    dplyr::left_join(
+      y = key_works,
+      by = "doi"
+    ) |>
+    saveRDS(
+      file = fn
     )
-
-    refs$doi <- ifelse(
-        refs$doi == "",
-        as.character(NA),
-        paste0("https://doi.org/", refs$doi)
-    )
-
-    refs |>
-        dplyr::distinct() |>
-        dplyr::left_join(
-            y = key_works,
-            by = "doi"
-        ) |>
-        saveRDS(
-            file = fn
-        )
 }
 
 key_works <- readRDS(fn)
@@ -153,44 +172,44 @@ key_works <- readRDS(fn)
 #| label: snowball_search
 
 kws <- key_works |>
-    dplyr::group_by(id) |>
-    dplyr::summarise(
-        bms = list(bm = bm),
-        .groups = "keep"
-    ) |>
-    dplyr::ungroup() |>
-    dplyr::mutate(
-        id = gsub(
-            pattern = "https://openalex.org/",
-            replacement = "",
-            x = id
-        )
+  dplyr::group_by(id) |>
+  dplyr::summarise(
+    bms = list(bm = bm),
+    .groups = "keep"
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::mutate(
+    id = gsub(
+      pattern = "https://openalex.org/",
+      replacement = "",
+      x = id
     )
+  )
 
 dir.create(file.path("output", "snowballs"), showWarnings = FALSE)
 
 tic()
 
 pbapply::pblapply(
-    seq_along(kws$id),
-    function(i) {
-        tic()
-        fn <- file.path("output", "snowballs", paste0(kws$id[i], ".rds"))
-        if (file.exists(fn)) {
-            message("Skippig ", i, " of ", nrow(kws), " - file exists")
-        } else {
-            message("Snowballing ", kws$id[i], " --- ", i, " of ", nrow(kws), " ...")
+  seq_along(kws$id[!is.na(kws$id)]),
+  function(i) {
+    tic()
+    fn <- file.path("output", "snowballs", paste0(kws$id[i], ".rds"))
+    if (file.exists(fn)) {
+      message("Skippig ", i, " of ", nrow(kws), " - file exists")
+    } else {
+      message("Snowballing ", kws$id[i], " --- ", i, " of ", nrow(kws), " ...")
 
-            try(
-                kws$id[[i]] |>
-                    openalexR::oa_snowball() |>
-                    saveRDS(file = fn)
-            )
-        }
-        toc()
+      try(
+        kws$id[[i]] |>
+          openalexR::oa_snowball() |>
+          saveRDS(file = fn)
+      )
     }
+    toc()
+  }
 ) |>
-    invisible()
+  invisible()
 
 toc()
 ```
@@ -205,139 +224,130 @@ path_nodes <- file.path("output", "nodes")
 path_edges <- file.path("output", "edges")
 
 if (!(dir.exists(path_nodes) & dir.exists(path_edges))) {
-    dir.create(path_nodes, showWarnings = FALSE)
-    dir.create(path_edges, showWarnings = FALSE)
+  dir.create(path_nodes, showWarnings = FALSE)
+  dir.create(path_edges, showWarnings = FALSE)
 
-    for (bm1 in unique(key_works$bm)) {
-        message("\nProcessing ", bm1, " - ", which(unique(key_works$bm) == bm1), " of ", length(unique(key_works$bm)))
-        tic()
-        ids <- key_works |>
-            dplyr::filter(
-                bm == bm1,
-                id != is.na(id)
-            ) |>
-            dplyr::select(
-                id
-            ) |>
-            dplyr::mutate(
-                id = gsub(
-                    pattern = "https://openalex.org/",
-                    replacement = "",
-                    x = id
-                )
-            ) |>
-            unlist() |>
-            unique()
-
-        ### Loading
-        message("  |- Loading files")
-        snowballs <- pbapply::pblapply(
-            ids,
-            function(id) {
-                result <- NULL
-                try(
-                    result <- readRDS(file.path("output", "snowballs", paste0(id, ".rds")))
-                )
-                return(result)
-            }
+  for (bm1 in unique(key_works$bm)) {
+    message("\nProcessing ", bm1, " - ", which(unique(key_works$bm) == bm1), " of ", length(unique(key_works$bm)))
+    tic()
+    ids <- key_works |>
+      dplyr::filter(
+        bm == bm1,
+        id != is.na(id)
+      ) |>
+      dplyr::select(
+        id
+      ) |>
+      dplyr::mutate(
+        id = gsub(
+          pattern = "https://openalex.org/",
+          replacement = "",
+          x = id
         )
+      ) |>
+      unlist() |>
+      unique()
 
-        ### Converting and saving nodes
-        message("  |- Combining and writing nodes")
-        pbapply::pblapply(
-            snowballs,
-            function(x) {
-                if (is.null(x)) {
-                    node <- NULL
-                } else {
-                    node <- x[["nodes"]]
-                    node$author <- IPBES.R::abbreviate_authors(node)
-                    if (!"ab" %in% colnames(node)) {
-                        node <- node |>
-                            dplyr::mutate(
-                                ab = as.character(NA)
-                            )
-                    }
-                    if (!"doi" %in% colnames(node)) {
-                        node <- node |>
-                            dplyr::mutate(
-                                doi = as.character(NA)
-                            )
-                    }
-                    node <- node |>
-                        dplyr::select(
-                            id,
-                            doi,
-                            author,
-                            publication_year,
-                            title,
-                            ab,
-                            oa_input
-                        )
-                }
-                return(node)
-            }
-        ) |>
-            dplyr::bind_rows() |>
-            dplyr::distinct() |>
-            dplyr::mutate(
-                bm = bm1
-            ) |>
-            arrow::write_dataset(
-                path = path_nodes,
-                format = "parquet",
-                partitioning = c("bm"),
-                existing_data_behavior = "delete_matching"
-            )
+    ### Loading
+    message("  |- Loading files")
+    snowballs <- pbapply::pblapply(
+      ids,
+      function(id) {
+        result <- NULL
+        try(
+          result <- readRDS(file.path("output", "snowballs", paste0(id, ".rds"))),
+          silent = TRUE
+        )
+        return(result)
+      }
+    )
 
-        ### Converting and saving edges
-        message("  |- Combining and writing edges")
-        pbapply::pblapply(
-            snowballs,
-            function(x) {
-                x[["edges"]]
-            }
-        ) |>
-            dplyr::bind_rows() |>
-            dplyr::distinct() |>
+    ### Converting and saving nodes
+    message("  |- Combining and writing nodes")
+    pbapply::pblapply(
+      snowballs,
+      function(x) {
+        if (is.null(x)) {
+          node <- NULL
+        } else {
+          node <- x[["nodes"]]
+          node$author <- IPBES.R::abbreviate_authors(node)
+          if (!"ab" %in% colnames(node)) {
+            node <- node |>
+              dplyr::mutate(
+                ab = as.character(NA)
+              )
+          }
+          if (!"doi" %in% colnames(node)) {
+            node <- node |>
+              dplyr::mutate(
+                doi = as.character(NA)
+              )
+          }
+          node <- node |>
             dplyr::mutate(
-                bm = bm1
-            ) |>
-            arrow::write_dataset(
-                path = path_edges,
-                format = "parquet",
-                partitioning = c("bm"),
-                existing_data_behavior = "delete_matching"
+              grants = NULL,
+              counts_by_year = NULL,
+              referenced_works = NULL,
+              related_works = NULL,
+              concepts = NULL,
+              topics = NULL
             )
-        toc()
-    }
+          #     dplyr::select(
+          #       id,
+          #       doi,
+          #       author,
+          #       publication_year,
+          #       title,
+          #       ab,
+          #       oa_input
+          #     )
+        }
+        return(node)
+      }
+    ) |>
+      dplyr::bind_rows() |>
+      dplyr::distinct() |>
+      dplyr::mutate(
+        bm = bm1
+      ) |>
+      arrow::write_dataset(
+        path = path_nodes,
+        format = "parquet",
+        partitioning = c("bm"),
+        existing_data_behavior = "delete_matching"
+      )
+
+    ### Converting and saving edges
+    message("  |- Combining and writing edges")
+    pbapply::pblapply(
+      snowballs,
+      function(x) {
+        x[["edges"]]
+      }
+    ) |>
+      dplyr::bind_rows() |>
+      dplyr::distinct() |>
+      dplyr::mutate(
+        bm = bm1
+      ) |>
+      arrow::write_dataset(
+        path = path_edges,
+        format = "parquet",
+        partitioning = c("bm"),
+        existing_data_behavior = "delete_matching"
+      )
+    toc()
+  }
 }
 
 nodes <- arrow::open_dataset(
-    sources = path_nodes
+  sources = path_nodes
 )
 
 edges <- arrow::open_dataset(
-    sources = path_edges
+  sources = path_edges
 )
-
-snowball <- function(backgroundMessage, collect = TRUE) {
-    result <- list(
-        nodes = nodes |>
-            dplyr::filter(
-                bm == backgroundMessage
-            ),
-        edges = edges |>
-            dplyr::filter(
-                bm == backgroundMessage
-            )
-    )
-    if (collect) {
-        result <- lapply(result, dplyr::collect)
-    }
-
-    return(result)
-}
 ```
 
 
@@ -347,14 +357,18 @@ snowball <- function(backgroundMessage, collect = TRUE) {
 #| label: refs_per_year
 
 refs_per_year <- nodes |>
-    dplyr::group_by(
-        bm,
-        publication_year
-    ) |>
-    dplyr::summarise(
-        n = dplyr::n()
-    ) |>
-    dplyr::collect()
+  dplyr::group_by(
+    bm,
+    publication_year
+  ) |>
+  dplyr::summarise(
+    n = dplyr::n()
+  ) |>
+  dplyr::arrange(
+    bm,
+    publication_year
+  ) |>
+  dplyr::collect()
 ```
 
 ## Figures
@@ -367,54 +381,54 @@ refs_per_year <- nodes |>
 
 figname <- file.path("figures", "fig_pub_per_year")
 if (length(list.files("figures", "fig_pub_per_year")) < 2) {
-    fig <- refs_per_year |>
-        dplyr::collect() |>
-        ggplot(
-            aes(
-                x = publication_year,
-                y = n,
-                group = bm,
-                color = bm
-            )
-        ) +
-        geom_line() +
-        geom_point() +
-        geom_vline(
-            xintercept = 2019,
-            linetype = "dashed"
-        ) +
-        theme_minimal() +
-        labs(
-            title = "Number of New Publications per Year by Background Message",
-            x = "Publication Year",
-            y = "Number of Publications",
-            color = "Background Message"
-        ) +
-        theme(
-            legend.position = "bottom",
-            legend.title = element_blank()
-        ) +
-        xlim(2000, 2025) +
-        scale_y_log10()
+  fig <- refs_per_year |>
+    dplyr::collect() |>
+    ggplot(
+      aes(
+        x = publication_year,
+        y = n,
+        group = bm,
+        color = bm
+      )
+    ) +
+    geom_line() +
+    geom_point() +
+    geom_vline(
+      xintercept = 2019,
+      linetype = "dashed"
+    ) +
+    theme_minimal() +
+    labs(
+      title = "Number of New Publications per Year by Background Message",
+      x = "Publication Year",
+      y = "Number of Publications",
+      color = "Background Message"
+    ) +
+    theme(
+      legend.position = "bottom",
+      legend.title = element_blank()
+    ) +
+    xlim(2000, 2025) +
+    scale_y_log10()
 
-    ggplot2::ggsave(
-        filename = paste0(figname, ".png"),
-        plot = fig,
-        width = 10,
-        height = 6
-    )
-    ggplot2::ggsave(
-        filename = paste0(figname, ".pdf"),
-        plot = fig,
-        width = 10,
-        height = 6
-    )
-    ggplot2::ggsave(
-        filename = paste0(figname, ".svg"),
-        plot = fig,
-        width = 10,
-        height = 6
-    )
+  ggplot2::ggsave(
+    filename = paste0(figname, ".png"),
+    plot = fig,
+    width = 10,
+    height = 20
+  )
+  ggplot2::ggsave(
+    filename = paste0(figname, ".pdf"),
+    plot = fig,
+    width = 10,
+    height = 20
+  )
+  ggplot2::ggsave(
+    filename = paste0(figname, ".svg"),
+    plot = fig,
+    width = 10,
+    height = 20
+  )
 }
 ```
 
@@ -423,22 +437,79 @@ if (length(list.files("figures", "fig_pub_per_year")) < 2) {
 The dataset contains **`r key_works |> select(zotero) |> distinct() |> collect() |> nrow()`** paper referenced in the background messages. Out of these, **`r nodes |> filter(oa_input) |> select(id) |> distinct() |> collect() |> nrow()`** were usable for the snowball search and also yielded results.
 
 ```{r}
+#| lebel: dada_table
+#| 
+
 nodes |>
-    dplyr::group_by(bm) |>
-    dplyr::summarise(
-        n = dplyr::n(),
-        n_key_paper = sum(oa_input == TRUE, na.rm = TRUE),
-        n_non_key_paper = sum(oa_input == FALSE, na.rm = TRUE),
-        n_nkp_pre_2018 = sum(((oa_input == FALSE) & (publication_year <= 2018)), na.rm = TRUE), # Count of papers with publication_year <= 2018
-        n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE) # Count of papers with publication_year > 2018
-    ) |>
-    dplyr::arrange(
-        bm
-    ) |>
-    dplyr::collect() |>
-    IPBES.R::table_dt()
+  dplyr::group_by(bm) |>
+  dplyr::summarise(
+    n = dplyr::n(),
+    n_key_paper = sum(oa_input == TRUE, na.rm = TRUE),
+    n_non_key_paper = sum(oa_input == FALSE, na.rm = TRUE),
+    n_nkp_pre_2018 = sum(((oa_input == FALSE) & (publication_year <= 2018)), na.rm = TRUE), # Count of papers with publication_year <= 2018
+    n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE) # Count of papers with publication_year > 2018
+  ) |>
+  dplyr::arrange(
+    bm
+  ) |>
+  dplyr::collect() |>
+  IPBES.R::table_dt()
 ```
 
+## Publication types after 2018
+
+Here we show the different types of publication after 2018 as identified by the snowbal search. All Sub-background messages are grouped.
+
+
+```{r}
+#| label: publication_types_grouped
+#| echo: false
+
+
+nodes |>
+  dplyr::filter(
+    publication_year > 2018
+  ) |>
+  dplyr::select(
+    type
+    ) |>
+  dplyr::summarize(
+    n = n(),
+    .by = type
+  ) |>
+  dplyr::arrange(
+    dplyr::desc(n)
+  ) |>
+  dplyr::collect() |>
+  knitr::kable()
+```
+
+This table allows the filtering shows the number of work types per sub-background message. It allows filtering as well as sortu=ing and downloading.
+
+```{r}
+#| label: publication_types_non_grouped
+#| echo: false
+
+nodes |>
+  dplyr::filter(
+    publication_year > 2018
+  ) |>
+  dplyr::select(
+    bm,
+    type
+    ) |>
+  dplyr::summarize(
+    n = n(),
+    .by = c(type, bm)
+  ) |>
+  dplyr::arrange(
+    dplyr::desc(n)
+  ) |>
+  dplyr::collect() |>
+  IPBES.R::table_dt(
+    fixed_columns = NULL
+  )
+```
 ## Publications per year
 
 ![](figures/fig_pub_per_year.png)
@@ -446,7 +517,6 @@ nodes |>
 - [Download `png`](figures/fig_pub_per_year.png)
 - [Download `pdf`](figures/fig_pub_per_year.pdf)
 - [Download `svg`](figures/fig_pub_per_year.svg)
-
 
 ## Overlap between background messages
 
@@ -464,49 +534,49 @@ The key papers include al key papers.
 fn <- file.path("output", "key_paper_overlap.rds")
 
 if (!file.exists(fn)) {
-    overlap_keypapers <- nodes |>
-        dplyr::filter(
-            oa_input,
-            !is.na(id)
-        ) |>
-        dplyr::group_by(id) |>
-        dplyr::collect() |>
-        dplyr::summarise(
-            n = n(),
-            author,
-            title,
-            doi = gsub("https://doi.org/", "", doi),
-            bms = list(bm)
-        ) |>
-        dplyr::distinct() |>
-        dplyr::arrange(
-            desc(n)
-        ) |>
-        dplyr::filter(
-            n > 1,
-            !is.na(id)
-        ) |>
-        dplyr::mutate(
-            id = paste0('<a href="https://openalex.org/', id, '" target="_blank">', id, "</a>"),
-            doi = paste0('<a href="https://doi.org/', doi, '" target="_blank">', doi, "</a>")
-        ) |>
-        dplyr::select(
-            n,
-            id,
-            author,
-            title,
-            doi,
-            bms
-        ) |>
-        saveRDS(
-            file = fn
-        )
+  overlap_keypapers <- nodes |>
+    dplyr::filter(
+      oa_input,
+      !is.na(id)
+    ) |>
+    dplyr::group_by(id) |>
+    dplyr::collect() |>
+    dplyr::summarise(
+      n = n(),
+      author,
+      title,
+      doi = gsub("https://doi.org/", "", doi),
+      bms = list(bm)
+    ) |>
+    dplyr::distinct() |>
+    dplyr::arrange(
+      desc(n)
+    ) |>
+    dplyr::filter(
+      n > 1,
+      !is.na(id)
+    ) |>
+    dplyr::mutate(
+      id = paste0('<a href="https://openalex.org/', id, '" target="_blank">', id, "</a>"),
+      doi = paste0('<a href="https://doi.org/', doi, '" target="_blank">', doi, "</a>")
+    ) |>
+    dplyr::select(
+      n,
+      id,
+      author,
+      title,
+      doi,
+      bms
+    ) |>
+    saveRDS(
+      file = fn
+    )
 }
 
 readRDS(fn) |>
-    IPBES.R::table_dt(
-        fixedColumns = list(leftColumns = 2)
-    )
+  IPBES.R::table_dt(
+    fixedColumns = list(leftColumns = 2)
+  )
 ```
 
 ### All papers excluding Key Papers
@@ -520,50 +590,50 @@ Here we are only interested in papers which were published after 2018, as we ean
 fn <- file.path("output", "non_key_paper_overlap.rds")
 
 if (!file.exists(fn)) {
-    overlap_non_keypapers <- nodes |>
-        dplyr::filter(
-            !oa_input,
-            !is.na(id),
-            publication_year > 2018
-        ) |>
-        dplyr::group_by(id) |>
-        collect() |>
-        summarise(
-            n = n(),
-            author,
-            title,
-            doi = gsub("https://doi.org/", "", doi),
-            bms = list(bm)
-        ) |>
-        dplyr::distinct() |>
-        dplyr::arrange(
-            desc(n)
-        ) |>
-        dplyr::filter(
-            n > 1,
-            !is.na(id)
-        ) |>
-        dplyr::mutate(
-            id = paste0('<a href="https://openalex.org/', id, '" target="_blank">', id, "</a>"),
-            doi = paste0('<a href="https://doi.org/', doi, '" target="_blank">', doi, "</a>")
-        ) |>
-        dplyr::select(
-            n,
-            id,
-            author,
-            title,
-            doi,
-            bms
-        ) |>
-        saveRDS(
-            file = fn
-        )
+  overlap_non_keypapers <- nodes |>
+    dplyr::filter(
+      !oa_input,
+      !is.na(id),
+      publication_year > 2018
+    ) |>
+    dplyr::group_by(id) |>
+    collect() |>
+    summarise(
+      n = n(),
+      author,
+      title,
+      doi = gsub("https://doi.org/", "", doi),
+      bms = list(bm)
+    ) |>
+    dplyr::distinct() |>
+    dplyr::arrange(
+      desc(n)
+    ) |>
+    dplyr::filter(
+      n > 1,
+      !is.na(id)
+    ) |>
+    dplyr::mutate(
+      id = paste0('<a href="https://openalex.org/', id, '" target="_blank">', id, "</a>"),
+      doi = paste0('<a href="https://doi.org/', doi, '" target="_blank">', doi, "</a>")
+    ) |>
+    dplyr::select(
+      n,
+      id,
+      author,
+      title,
+      doi,
+      bms
+    ) |>
+    saveRDS(
+      file = fn
+    )
 }
 
 readRDS(fn) |>
-    IPBES.R::table_dt(
-        fixedColumns = list(leftColumns = 2)
-    )
+  IPBES.R::table_dt(
+    fixedColumns = list(leftColumns = 2)
+  )
 
 ```
 
@@ -571,59 +641,58 @@ readRDS(fn) |>
 ```{r}
 #| eval: false
 
-
 x <- nodes |>
-    dplyr::filter(
-        !oa_input,
-        !is.na(id)
-    ) |>
-    dplyr::group_by(id) |>
-    dplyr::collect() |>
-    summarise(
-        bms = list(bm),
-        author,
-        title,
-        doi,
-        n = n()
-    ) |>
-    dplyr::distinct() |>
-    dplyr::arrange(
-        desc(n)
-    ) |>
-    dplyr::filter(
-        n > 1
-    )
+  dplyr::filter(
+    !oa_input,
+    !is.na(id)
+  ) |>
+  dplyr::group_by(id) |>
+  dplyr::collect() |>
+  summarise(
+    bms = list(bm),
+    author,
+    title,
+    doi,
+    n = n()
+  ) |>
+  dplyr::distinct() |>
+  dplyr::arrange(
+    desc(n)
+  ) |>
+  dplyr::filter(
+    n > 1
+  )
 
 dn <- file.path("output", "dois")
 
 if (!dir.exists(dn)) {
-    dir.create(dn)
-    all_bms <- nodes |>
-        dplyr::select(
-            bm
-        ) |>
-        dplyr::distinct(
-            bm
-        ) |>
-        collect() |>
-        unlist() |>
-        unique()
+  dir.create(dn)
+  all_bms <- nodes |>
+    dplyr::select(
+      bm
+    ) |>
+    dplyr::distinct(
+      bm
+    ) |>
+    collect() |>
+    unlist() |>
+    unique()
 
-    for (bms in all_bms) {
-        nodes |>
-            dplyr::filter(
-                bm == bms
-            ) |>
-            dplyr::select(
-                doi
-            ) |>
-            dplyr::collect() |>
-            unlist() |>
-            unique() |>
-            writeLines(
-                con = file.path(dn, paste0(bms, ".txt"))
-            )
-    }
+  for (bms in all_bms) {
+    nodes |>
+      dplyr::filter(
+        bm == bms
+      ) |>
+      dplyr::select(
+        doi
+      ) |>
+      dplyr::collect() |>
+      unlist() |>
+      unique() |>
+      writeLines(
+        con = file.path(dn, paste0(bms, ".txt"))
+      )
+  }
 }
 ```
 
