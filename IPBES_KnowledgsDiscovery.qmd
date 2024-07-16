@@ -511,7 +511,7 @@ if (!file.exists(fn)) {
       desc(n)
     ) |>
     dplyr::filter(
-      n > 2,
+      n > 5,
       !is.na(id)
     ) |>
     dplyr::mutate(
