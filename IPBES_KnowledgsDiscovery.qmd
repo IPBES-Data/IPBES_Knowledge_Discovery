@@ -785,6 +785,7 @@ This overlap can have different causes. Either there is an overlap of the key-pa
 
 The first table shows the overlap of the key-papers only regarding sub messages.
 
+Only papers with in more then 1 Sub Messages are shown.
 
 <iframe src="output/overlap_key_paper_sub_messages.html" width="100%" height="500px"></iframe>
 
@@ -792,11 +793,15 @@ The first table shows the overlap of the key-papers only regarding sub messages.
 
 The second table shows the overlap of all papers after 2018 regarding sub messages.
 
+Only papers with in more then 5 Sub Messages are shown.
+
 <iframe src="output/overlap_after_2018_sub_messages.html" width="100%" height="500px"></iframe>
 
 ### Overlap of Papers after 2018 in Background Messages
 
 The third table shows the overlap of all papers after 2018 regarding background messages.
+
+Only papers with in more then 5 Background Messages are shown.
 
 <iframe src="output/overlap_after_2018_background_messages.html" width="100%" height="500px"></iframe>
 
