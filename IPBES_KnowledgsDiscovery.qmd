@@ -57,19 +57,62 @@ library(htmltools)
 
 library(tictoc)
 
-snowball <- function(backgroundMessage, collect = TRUE) {
-  result <- list(
-    nodes = nodes |>
-      dplyr::filter(
-        bm == backgroundMessage
-      ),
-    edges = edges |>
-      dplyr::filter(
-        bm == backgroundMessage
-      )
-  )
+snowball <- function(
+    background_message = NULL,
+    sub_message = NULL,
+    collect = TRUE) {
+  ## Both provided
+  if (!is.null(sub_message) & !is.null(background_message)) {
+    stop("Please provide either sub_message or backgrpund_message - not both!")
+  }
+
+  ## None provided
+  if (is.null(sub_message) & is.null(background_message)) {
+    result <- list(
+      nodes = nodes |>
+        distinct(),
+      edges = edges |>
+        distinct()
+    )
+  }
+
+  ## Only sub_message provided
+  if (!is.null(sub_message)) {
+    result <- list(
+      nodes = nodes |>
+        dplyr::filter(
+          sm == sub_message
+        ) |>
+        distinct(),
+      edges = edges |>
+        dplyr::filter(
+          sm == sub_message
+        ) |>
+        distinct()
+    )
+  }
+
+  ## Only background_message provided
+  if (!is.null(background_message)) {
+    result <- list(
+      nodes = nodes |>
+        dplyr::filter(
+          bm == background_message
+        ) |>
+        distinct(),
+      edges = edges |>
+        dplyr::filter(
+          bm == background_message
+        ) |>
+        distinct()
+    )
+  }
+
   if (collect) {
-    result <- lapply(result, dplyr::collect)
+    result <- lapply(
+      result,
+      dplyr::collect
+    )
   }
 
   return(result)
@@ -108,18 +151,31 @@ if (!file.exists(fn)) {
       quote = "\"",
       stringsAsFactors = FALSE
     ) |>
+    tibble::as_tibble() |>
     dplyr::mutate(
-      bm = gsub("http://ontology.ipbes.net/report/subm/", "", Sub.Message),
-      Background.Message = NULL,
+      bm = gsub("http://ontology.ipbes.net/report/bgm/", "", Background.Message),
+      sm = gsub("http://ontology.ipbes.net/report/subm/", "", Sub.Message),
+      loc = Level.if.Confidence,
+      zotero = zotero,
       doi = gsub("https://doi.org/", "", doi),
+      citation = description,
+      Level.if.Confidence = NULL,
+      Background.Message = NULL,
+      Sub.Message = NULL,
       X = NULL
     ) |>
-    dplyr::select(
+    select(
       bm,
+      sm,
+      loc,
       zotero,
-      doi
+      doi,
+      citation
     ) |>
-    tibble::as_tibble()
+    distinct()
+
+  refs$loc[refs$loc == ""] <- as.character(NA)
+
 
   key_works <- openalexR::oa_fetch(
     entity = "works",
@@ -143,7 +199,6 @@ if (!file.exists(fn)) {
   )
 
   refs |>
-    dplyr::distinct() |>
     dplyr::left_join(
       y = key_works,
       by = "doi"
@@ -217,12 +272,18 @@ if (!(dir.exists(path_nodes) & dir.exists(path_edges))) {
   dir.create(path_nodes, showWarnings = FALSE)
   dir.create(path_edges, showWarnings = FALSE)
 
-  for (bm1 in unique(key_works$bm)) {
-    message("\nProcessing ", bm1, " - ", which(unique(key_works$bm) == bm1), " of ", length(unique(key_works$bm)))
+  for (sm1 in unique(key_works$sm)) {
+    bm1 <- strsplit(
+      sm1,
+      split = "-"
+    )
+    bm1 <- paste0(bm1[[1]][[1]], "-", bm1[[1]][[2]])
+    message("\nProcessing ", sm1, " - ", which(unique(key_works$bm) == sm1), " of ", length(unique(key_works$sm)))
+
     tic()
     ids <- key_works |>
       dplyr::filter(
-        bm == bm1,
+        sm == sm1,
         id != is.na(id)
       ) |>
       dplyr::select(
@@ -299,12 +360,13 @@ if (!(dir.exists(path_nodes) & dir.exists(path_edges))) {
       dplyr::bind_rows() |>
       dplyr::distinct() |>
       dplyr::mutate(
-        bm = bm1
+        bm = bm1,
+        sm = sm1
       ) |>
       arrow::write_dataset(
         path = path_nodes,
         format = "parquet",
-        partitioning = c("bm"),
+        partitioning = c("bm", "sm"),
         existing_data_behavior = "delete_matching"
       )
 
@@ -319,12 +381,13 @@ if (!(dir.exists(path_nodes) & dir.exists(path_edges))) {
       dplyr::bind_rows() |>
       dplyr::distinct() |>
       dplyr::mutate(
-        bm = bm1
+        bm = bm1,
+        sm = sm1
       ) |>
       arrow::write_dataset(
         path = path_edges,
         format = "parquet",
-        partitioning = c("bm"),
+        partitioning = c("bm", "sm"),
         existing_data_behavior = "delete_matching"
       )
     toc()
@@ -344,21 +407,22 @@ edges <- arrow::open_dataset(
 ## Extract number of references per background message per year
 
 ```{r}
-#| label: refs_per_year
+#| label: refs_per_year_sm
 
-refs_per_year <- nodes |>
+refs_per_year_sm <- nodes |>
   dplyr::group_by(
-    bm,
+    sm,
     publication_year
   ) |>
   dplyr::summarise(
     n = dplyr::n()
   ) |>
   dplyr::arrange(
-    bm,
+    sm,
     publication_year
   ) |>
-  dplyr::collect()
+  dplyr::collect() |>
+  saveRDS(file = file.path("output", "refs_per_year_sm.rds"))
 ```
 
 ## Figures
@@ -371,14 +435,15 @@ refs_per_year <- nodes |>
 
 figname <- file.path("figures", "fig_pub_per_year")
 if (length(list.files("figures", "fig_pub_per_year")) < 2) {
-  fig <- refs_per_year |>
+  fig <- file.path("output", "refs_per_year_sm.rds") |>
+    readRDS() |>
     dplyr::collect() |>
     ggplot(
       aes(
         x = publication_year,
         y = n,
-        group = bm,
-        color = bm
+        group = sm,
+        color = sm
       )
     ) +
     geom_line() +
@@ -426,10 +491,10 @@ if (length(list.files("figures", "fig_pub_per_year")) < 2) {
 
 
 ```{r}
-#| label: key_paper_overlap
+#| label: overlap_key_paper
 #|
 
-fn <- file.path("output", "key_paper_overlap.rds")
+fn <- file.path("output", "overlap_key_paper_sub_messages.rds")
 
 if (!file.exists(fn)) {
   overlap_keypapers <- nodes |>
@@ -437,14 +502,14 @@ if (!file.exists(fn)) {
       oa_input,
       !is.na(id)
     ) |>
-    dplyr::group_by(id) |>
     dplyr::collect() |>
     dplyr::summarise(
       n = n(),
       author,
       title,
       doi = gsub("https://doi.org/", "", doi),
-      bms = list(bm)
+      sms = list(sm),
+      .by = id
     ) |>
     dplyr::distinct() |>
     dplyr::arrange(
@@ -464,31 +529,32 @@ if (!file.exists(fn)) {
       author,
       title,
       doi,
-      bms
+      sms
     )
-    
-    saveRDS(
-      overlap_keypapers,
-      file = fn
-    )
+
+  saveRDS(
+    overlap_keypapers,
+    file = fn
+  )
 
   overlap_keypapers |>
     IPBES.R::table_dt(
       fixedColumns = list(leftColumns = 2)
     ) |>
     htmlwidgets::saveWidget(
-      file = file.path("output", "key_paper_overlap.html"),
-      selfcontained = FALSE
+      file = file.path("output", "overlap_key_paper_sub_messages.html"),
+      selfcontained = TRUE
     )
-}
 
+  rm(overlap_keypapers)
+}
 ```
 
 ```{r}
-#| label: after_2018_overlap
+#| label: overlap_after_2018_sub_messages
 #|
 
-fn <- file.path("output", "after_2018_overlap.rds")
+fn <- file.path("output", "overlap_after_2018_sub_messages.rds")
 
 if (!file.exists(fn)) {
   after_2018_overlap <- nodes |>
@@ -497,14 +563,14 @@ if (!file.exists(fn)) {
       !is.na(id),
       publication_year > 2018
     ) |>
-    dplyr::group_by(id) |>
     collect() |>
     summarise(
       n = n(),
       author,
       title,
       doi = gsub("https://doi.org/", "", doi),
-      bms = list(bm)
+      sms = list(sm),
+      .by = id
     ) |>
     dplyr::distinct() |>
     dplyr::arrange(
@@ -524,24 +590,101 @@ if (!file.exists(fn)) {
       author,
       title,
       doi,
-      bms
+      sms
     )
-    
-    saveRDS(
-      after_2018_overlap,
-      file = fn
-    )
+
+  saveRDS(
+    after_2018_overlap,
+    file = fn
+  )
 
   after_2018_overlap |>
     IPBES.R::table_dt(
       fixedColumns = list(leftColumns = 2)
     ) |>
     htmlwidgets::saveWidget(
-      file = file.path("output", "after_2018_overlap.html"),
-      selfcontained = FALSE
+      file = file.path("output", "overlap_after_2018_sub_messages.html"),
+      selfcontained = TRUE
     )
-}
 
+  rm(after_2018_overlap)
+}
+```
+
+
+```{r}
+#| label: overlap_after_2018_background_messages
+#|
+
+fn <- file.path("output", "overlap_after_2018_background_messages.rds")
+
+if (!file.exists(fn)) {
+  after_2018_overlap <- nodes |>
+    dplyr::filter(
+      !oa_input,
+      !is.na(id),
+      publication_year > 2018
+    ) |>
+    dplyr::select(
+      author,
+      title,
+      doi,
+      bm,
+      id,
+      abstract = ab
+    ) |>
+    dplyr::mutate(
+      sm = NULL
+    ) |>
+    dplyr::distinct() |>
+    collect() |>
+    summarise(
+      n = n(),
+      author,
+      title,
+      abstract,
+      doi = gsub("https://doi.org/", "", doi),
+      bms = list(bm),
+      .by = id
+    ) |>
+    dplyr::distinct() |>
+    dplyr::arrange(
+      desc(n)
+    ) |>
+    dplyr::filter(
+      n > 5,
+      !is.na(id)
+    ) |>
+    dplyr::mutate(
+      id = paste0('<a href="https://openalex.org/', id, '" target="_blank">', id, "</a>"),
+      doi = paste0('<a href="https://doi.org/', doi, '" target="_blank">', doi, "</a>")
+    ) |>
+    dplyr::select(
+      n,
+      id,
+      author,
+      title,
+      doi,
+      abstract,
+      bms
+    )
+
+  saveRDS(
+    after_2018_overlap,
+    file = fn
+  )
+
+  after_2018_overlap |>
+    IPBES.R::table_dt(
+      fixedColumns = list(leftColumns = 2)
+    ) |>
+    htmlwidgets::saveWidget(
+      file = file.path("output", "overlap_after_2018_background_messages.html"),
+      selfcontained = TRUE
+    )
+
+  rm(after_2018_overlap)
+}
 ```
 
 # Results
@@ -550,19 +693,19 @@ The dataset contains **`r key_works |> select(zotero) |> distinct() |> collect()
 
 ```{r}
 #| label: numbers_table
-#| 
+#|
 
 nodes |>
-  dplyr::group_by(bm) |>
   dplyr::summarise(
     n = dplyr::n(),
     n_key_paper = sum(oa_input == TRUE, na.rm = TRUE),
     n_non_key_paper = sum(oa_input == FALSE, na.rm = TRUE),
     n_nkp_pre_2018 = sum(((oa_input == FALSE) & (publication_year <= 2018)), na.rm = TRUE), # Count of papers with publication_year <= 2018
-    n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE) # Count of papers with publication_year > 2018
+    n_nkp_post_2018 = sum(((oa_input == FALSE) & (publication_year > 2018)), na.rm = TRUE), # Count of papers with publication_year > 2018,
+    .by = sm
   ) |>
   dplyr::arrange(
-    bm
+    sm
   ) |>
   dplyr::collect() |>
   IPBES.R::table_dt()
@@ -583,7 +726,7 @@ nodes |>
   ) |>
   dplyr::select(
     type
-    ) |>
+  ) |>
   dplyr::summarize(
     n = n(),
     .by = type
@@ -595,7 +738,7 @@ nodes |>
   knitr::kable()
 ```
 
-This table allows the filtering shows the number of work types per sub-background message. It allows filtering as well as sorting and downloading.
+This table shows the number of work types per sub-background message. It allows filtering as well as sorting and downloading.
 
 ```{r}
 #| label: publication_types_non_grouped
@@ -608,7 +751,7 @@ nodes |>
   dplyr::select(
     bm,
     type
-    ) |>
+  ) |>
   dplyr::summarize(
     n = n(),
     .by = c(type, bm)
@@ -621,6 +764,7 @@ nodes |>
     fixed_columns = NULL
   )
 ```
+
 ## Publications per year
 
 ![](figures/fig_pub_per_year.png)
@@ -629,7 +773,7 @@ nodes |>
 - [Download `pdf`](figures/fig_pub_per_year.pdf)
 - [Download `svg`](figures/fig_pub_per_year.svg)
 
-## Overlap between background messages
+## Overlap
 
 In this section we will look at the number of background messages in which a given paper, as identified by their OpenAlex id. We willlook at that separatr for key-papers and non key-papers.
 
@@ -637,73 +781,23 @@ In the following tables only the papers which occur in more than one background 
 
 This overlap can have different causes. Either there is an overlap of the key-papers, ehich results in an overlap of the new publications, or there is a topical overlap betweent the new paper themselves. 
 
-The first table shows the overlap of the key-papers only.
+### Overlap of Key Papers in Sub Messages
+
+The first table shows the overlap of the key-papers only regarding sub messages.
 
 
-<iframe src="output/key_paper_overlap.html" width="100%" height="500px"></iframe>
+<iframe src="output/overlap_key_paper_sub_messages.html" width="100%" height="500px"></iframe>
 
-The second table shows the overlap of all papers after 2018.
+### Overlap of Papers after 2018 in Sub Messages
 
+The second table shows the overlap of all papers after 2018 regarding sub messages.
 
+<iframe src="output/overlap_after_2018_sub_messages.html" width="100%" height="500px"></iframe>
 
-<iframe src="output/after_2018_overlap.html" width="100%" height="500px"></iframe>
+### Overlap of Papers after 2018 in Background Messages
 
+The third table shows the overlap of all papers after 2018 regarding background messages.
 
-```{r}
-#| eval: false
+<iframe src="output/overlap_after_2018_background_messages.html" width="100%" height="500px"></iframe>
 
-x <- nodes |>
-  dplyr::filter(
-    !oa_input,
-    !is.na(id)
-  ) |>
-  dplyr::group_by(id) |>
-  dplyr::collect() |>
-  summarise(
-    bms = list(bm),
-    author,
-    title,
-    doi,
-    n = n()
-  ) |>
-  dplyr::distinct() |>
-  dplyr::arrange(
-    desc(n)
-  ) |>
-  dplyr::filter(
-    n > 1
-  )
-
-dn <- file.path("output", "dois")
-
-if (!dir.exists(dn)) {
-  dir.create(dn)
-  all_bms <- nodes |>
-    dplyr::select(
-      bm
-    ) |>
-    dplyr::distinct(
-      bm
-    ) |>
-    collect() |>
-    unlist() |>
-    unique()
-
-  for (bms in all_bms) {
-    nodes |>
-      dplyr::filter(
-        bm == bms
-      ) |>
-      dplyr::select(
-        doi
-      ) |>
-      dplyr::collect() |>
-      unlist() |>
-      unique() |>
-      writeLines(
-        con = file.path(dn, paste0(bms, ".txt"))
-      )
-  }
-}
-```
 
