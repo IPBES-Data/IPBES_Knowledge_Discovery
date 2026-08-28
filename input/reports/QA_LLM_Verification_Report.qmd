@@ -1,0 +1,208 @@
+---
+title: QA LLM Verification Report
+subtitle: QA check for Phase 2 (LLM verification) of NLI-flagged claim/work pairs
+date: today
+params:
+  assessment_id: "GA1"
+  llm_config: "openrouter_cheap"
+format:
+    html:
+        toc: true
+        toc-depth: 4
+        embed-resources: true
+        code-fold: true
+        code-summary: 'Show the code'
+        keep-md: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(DT)
+
+# No report_files_dir/copy_into_report_files() here, and no source()ing of
+# R/build_llm_verification_qa_data.R either -- quarto::quarto_render() runs
+# this file in its own fresh session that never sources R/*.R (same
+# reasoning QA_NLI_Scores_Report.qmd's own setup chunk gives). The DT
+# widgets were already built and cached by build_llm_verification_qa_data()
+# -- library(DT) above is what lets the cached htmlwidget objects render
+# correctly once reloaded.
+expected_name <- function(ext) {
+  sprintf("llm_verification_qa_%s_%s.%s", params$assessment_id, params$llm_config, ext)
+}
+
+data_path <- targets::tar_read_raw("llm_verification_qa_data") |>
+  (\(x) x[basename(x) == expected_name("rds")])()
+x <- readRDS(data_path)
+
+# Embedded as base64 data: URIs (xfun::base64_uri()), same convention
+# QA_NLI_Scores_Report.qmd already uses and already confirmed necessary --
+# Quarto/pandoc's own resource resolution mangles plain paths here even
+# when absolute.
+decile_path <- targets::tar_read_raw("llm_verification_qa_figures") |>
+  (\(paths) paths[basename(paths) == sprintf("llm_verification_qa_decile_%s_%s.png", params$assessment_id, params$llm_config)])()
+alluvial_path <- targets::tar_read_raw("llm_verification_qa_figures") |>
+  (\(paths) paths[basename(paths) == sprintf("llm_verification_qa_alluvial_%s_%s.png", params$assessment_id, params$llm_config)])()
+```
+
+# `r params$assessment_id` -- llm_config: `r params$llm_config`
+
+## Methodology
+
+This report is a **QA check on Phase 2 (LLM verification), not a scoring
+result in its own right** — it lets each LLM-reviewed claim/work pair be
+spot-checked by eye (title, abstract, DOI, NLI's own label/confidence, the
+LLM's independent label/agreement/quote), shows how the two classifiers'
+labels compare, and — separately — audits **every** key paper the keypaper
+LLM chain has reviewed, regardless of NLI's own label or confidence. See
+`TD_NLI_LLM_two_phase.qmd` for the full Phase 2 design and
+`QA_NLI_Scores_Report.qmd` for the equivalent Phase 1 (NLI) QA report.
+
+A literal ternary probability plot (Phase 1's own QA figure) was considered
+and rejected for Phase 2: the LLM emits one categorical verdict, not a
+3-part probability composition, so a simplex density would really just be
+NLI's own chart wearing a Phase-2 label. The two figures below are built
+instead from what Phase 2 actually produces.
+
+```{r}
+#| label: empty-check
+#| results: asis
+if (isTRUE(x$empty)) {
+  cat("No LLM-verified data available yet for this assessment/config combination — Phase 2 hasn't produced output here.\n\n")
+  knitr::knit_exit()
+}
+```
+
+```{r}
+#| label: summary
+#| results: asis
+cat(sprintf(
+  "- **%s** LLM-reviewed (claim, citing work) pairs in total\n",
+  format(x$n_total, big.mark = ",")
+))
+cat(sprintf(
+  "- **%.1f%%** of reviewed pairs: `llm_label` agrees with NLI's own `label`\n",
+  x$llm_agrees_pct
+))
+cat(sprintf(
+  "- **%.1f%%** of reviewed pairs: the LLM found `sufficient_evidence` to make a call\n",
+  x$sufficient_evidence_pct
+))
+cat(sprintf(
+  "- **%.1f%%** of reviewed pairs: demoted to NOT_ENOUGH_INFO because the LLM's cited quote wasn't found verbatim in the supplied text\n",
+  x$quote_verbatim_demotion_pct
+))
+cat(sprintf(
+  "- **%.1f%%** of reviewed pairs: `direct_evidence_match` (the citing work traces back to a seed reference matching the claim's own evidence braces)\n",
+  x$direct_evidence_match_pct
+))
+cat(sprintf(
+  "- The table below shows up to **%d** highest-NLI-confidence rows per claim (**%s** rows shown here, out of the %s total) — every claim's own true row count is carried in the `n_total_claim` column so no truncation is silent\n",
+  x$per_claim_cap, format(x$n_shown, big.mark = ","), format(x$n_total, big.mark = ",")
+))
+```
+
+## NLI label x LLM label
+
+A literal confusion matrix comparing the two classifiers on the same
+pairs — Phase 2 has no numeric confidence of its own to bucket by, unlike
+Phase 1's label x confidence-decile matrix.
+
+```{r}
+#| label: confusion-matrix
+knitr::kable(x$confusion_matrix)
+```
+
+## Does LLM/NLI agreement track NLI's own confidence?
+
+X-axis: NLI's own confidence, binned into deciles. Y-axis: the % of
+LLM-reviewed pairs in that decile where `llm_label` agrees with NLI's
+`label` — one line, built on the full reviewed set (point size = how many
+pairs support that decile). The natural expectation: agreement should rise
+as NLI's own confidence rises.
+
+The orange overlay is the **key-paper LLM validation chain**
+(`llm_verification_keypaper_parquet`) — every key/seed paper reviewed,
+regardless of its own NLI label or confidence: individual jittered points
+at each key paper's own NLI confidence (100 if the LLM agreed with NLI for
+that paper, 0 if not), plus a single dashed reference line at their
+aggregate agreement rate, directly comparable to the general-population
+line above it since both use the same `llm_agrees` metric. Absent (general
+line only) until that chain has been run for this assessment.
+
+```{r}
+#| label: decile-figure
+#| results: asis
+if (length(decile_path)) {
+  cat(sprintf('<img src="%s" style="max-width:100%%;"><br><br>\n\n', xfun::base64_uri(decile_path)))
+}
+```
+
+## NLI to LLM label flow
+
+Band width = pair count flowing from each NLI label to each LLM label (the
+exact same 3x3 contingency as the table above) — coloured green where the
+two classifiers agree, orange where they don't. The proportional picture
+(how much of REFUTES's mass actually stays LLM-confirmed REFUTES vs. gets
+downgraded or flipped) reads faster from a flow diagram than from the raw
+counts above.
+
+The right-hand panel is the same flow diagram restricted to key papers only
+(its own, separate scale — a key-paper flow plotted on the main panel's
+scale would be visually invisible given how much smaller that corpus is).
+Absent (main panel only) until the key-paper LLM verification chain has
+been run.
+
+```{r}
+#| label: alluvial-figure
+#| results: asis
+if (length(alluvial_path)) {
+  cat(sprintf('<img src="%s" style="max-width:100%%;"><br><br>\n\n', xfun::base64_uri(alluvial_path)))
+}
+```
+
+## Key-paper LLM validation
+
+Every key/seed paper IPBES cites as evidence for a BM, reviewed by the LLM
+**regardless of its own NLI label or confidence** — unlike the main
+citing-works corpus, which is routed by `nli_labels`/`nli_certainty` for
+cost control, key papers are a small, bounded, high-importance set where
+every one is worth an independent check. A key paper *is* the evidence a
+BM was written from, so any LLM verdict other than SUPPORTS deserves a
+human look.
+
+```{r}
+#| label: keypaper-summary
+#| results: asis
+if (is.null(x$keypaper_n)) {
+  cat("No key-paper LLM verification data available yet for this assessment/config — that chain hasn't been run.\n\n")
+} else {
+  cat(sprintf(
+    "- **%d** key papers reviewed (all of them)\n- **%.1f%%** LLM-confirmed as SUPPORTS (the expected outcome)\n- **%.1f%%** where the LLM agrees with NLI's own label\n\n",
+    x$keypaper_n, x$keypaper_llm_supports_pct, x$keypaper_llm_agrees_pct
+  ))
+  if (!is.null(x$keypaper_flagged_widget)) {
+    cat("Key papers the LLM did **not** confirm as SUPPORTS — the actionable subset:\n\n")
+  } else {
+    cat("Every key paper was LLM-confirmed as SUPPORTS.\n\n")
+  }
+}
+```
+
+```{r}
+#| label: keypaper-flagged-table
+if (!is.null(x$keypaper_flagged_widget)) {
+  x$keypaper_flagged_widget
+}
+```
+
+## Claims and scores
+
+Use the filter row below the header to narrow by KM, BM, claim, or label.
+
+```{r}
+#| label: scores-table
+x$widget
+```

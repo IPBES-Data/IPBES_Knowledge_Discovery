@@ -701,3 +701,27 @@ for (p in nli_scores_qa_html_paths) {
 }
 ```
 
+Per-(assessment, llm_config) QA check on Phase 2 (LLM verification) —
+independent LLM review of NLI-flagged claim/work pairs, plus a full audit
+of every key paper regardless of its own NLI label/confidence. Not a
+scoring result; see the report's own Methodology section for details.
+
+```{r}
+#| label: llm_verification_qa_report_links
+#| results: asis
+
+# Filename is always "..._<assessment>_<llm_config>.html" -- llm_config is
+# always present (no optional-default-unsuffixed convention here, unlike
+# nli_model_suffix()'s historical exception for "deberta_zeroshot").
+llm_verification_qa_html_paths <- targets::tar_read(llm_verification_qa_report_html)
+for (p in llm_verification_qa_html_paths) {
+  m <- regmatches(
+    basename(p),
+    regexec("^QA_LLM_Verification_Report_([A-Za-z0-9]+)_(.+)\\.html$", basename(p))
+  )[[1]]
+  id <- m[[2]]
+  cfg <- m[[3]]
+  cat(sprintf("- [%s QA LLM Verification Report (%s)](%s)\n", id, cfg, basename(p)))
+}
+```
+

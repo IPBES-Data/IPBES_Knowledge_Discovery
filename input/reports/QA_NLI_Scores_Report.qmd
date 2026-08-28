@@ -78,9 +78,10 @@ scoring result in its own right** — it lets each claim's scored citing
 works be spot-checked by eye (title, abstract, DOI, label, confidence, and
 the underlying class probabilities), and shows the overall
 SUPPORTS/REFUTES/NOT_ENOUGH_INFO x confidence distribution. It covers
-**Phase 1 only** — a separate QA report for Phase 2 (LLM verification) is
-planned as a follow-up. See `TD_BM_NLI_approach.qmd` for the full NLI
-approach and `TD_NLI_LLM_two_phase.qmd` for how Phase 2 builds on this.
+**Phase 1 only** — see `QA_LLM_Verification_Report.qmd` for the equivalent
+Phase 2 (LLM verification) QA report. See `TD_BM_NLI_approach.qmd` for the
+full NLI approach and `TD_NLI_LLM_two_phase.qmd` for how Phase 2 builds on
+this.
 
 ```{r}
 #| label: empty-check

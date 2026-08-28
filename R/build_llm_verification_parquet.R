@@ -173,7 +173,13 @@ select_llm_verification_candidates <- function(nli_scores_path, nli_ready_path,
     by = c("km", "bm", "sentence_number", "sentence_source", "work_id"),
     relationship = "many-to-many"
   )
-  out$pair_id <- paste(out$claim_id, out$work_id, sep = "__")
+  # MUST include km/bm, not just claim_id + work_id -- claim_id is only
+  # unique WITHIN one BM (e.g. every BM's first bm_description claim is
+  # literally "bm_description-01"), so a work cited under two different BMs
+  # that land on the same claim ordinal would otherwise collide here even
+  # though the claims are unrelated. Same lesson tag_direct_evidence_match()
+  # below already documents for its own scope-matching join.
+  out$pair_id <- paste(out$km, out$bm, out$claim_id, out$work_id, sep = "__")
   out$nli_route <- nli_route_label(out$nli_label, out$uncertain)
 
   # Both `scored` and `premises` can carry duplicate (km, bm, sentence_number,
@@ -187,7 +193,10 @@ select_llm_verification_candidates <- function(nli_scores_path, nli_ready_path,
   # keys, and duplicate pair_id rows race to write the SAME cache file
   # concurrently. Collapsing to one row per pair_id here fixes Phase 2
   # regardless of whether the upstream duplication itself ever gets
-  # deduplicated at the source.
+  # deduplicated at the source. Relies on pair_id already including km/bm
+  # (above) so this only ever collapses TRUE duplicate rows -- verified on
+  # real GA1/IAS routed data that a claim_id + work_id-only pair_id would
+  # instead have collapsed 11-40% of rows across genuinely different BMs.
   out <- dplyr::distinct(out, pair_id, .keep_all = TRUE)
   out
 }
@@ -333,6 +342,7 @@ build_llm_verification_parquet <- function(
   system_prompt_file,
   user_prompt_file,
   llm_candidate_scope_path,
+  granularity,
   nli_scores_by_claim_evidence = NULL, # unused -- establishes the DAG dependency on Phase 1 scoring
   cache_dir = "output/llm_verification/raw",
   output_root = "output/llm_verification/scores"
@@ -358,10 +368,17 @@ build_llm_verification_parquet <- function(
   # Same reasoning as build_nli_overview_data.R: this path is reconstructed
   # rather than taken from nli_scores_by_claim_evidence's own (per-claim,
   # not per-assessment) branch values, which come from the dynamic scoring
-  # chain and can't be sliced by assessment directly.
+  # chain and can't be sliced by assessment directly. MUST include
+  # granularity=<g>/ ahead of nli_config=<cfg>/ -- confirmed directly against
+  # the real on-disk layout (output/nli_scores_evidence/granularity=<g>/
+  # nli_config=<cfg>/assessment=<id>/); omitting it made dir.exists() fail
+  # silently inside select_llm_verification_candidates(), which returns an
+  # empty tibble rather than erroring -- this function had apparently never
+  # been run for real before that was caught (output/llm_verification/raw
+  # and scores/ didn't exist on disk until then).
   nli_scores_path <- file.path(
-    "output/nli_scores_evidence", paste0("nli_config=", nli_active),
-    paste0("assessment=", assessment_id)
+    "output/nli_scores_evidence", paste0("granularity=", granularity),
+    paste0("nli_config=", nli_active), paste0("assessment=", assessment_id)
   )
 
   candidates <- select_llm_verification_candidates(
@@ -377,6 +394,15 @@ build_llm_verification_parquet <- function(
   }
   if (!nrow(candidates)) {
     message(sprintf("[LLM verify %s] no candidate pairs to review", assessment_id))
+    # format = "file" targets require the returned path to actually exist --
+    # file.exists() is TRUE for an existing empty directory too, so this is
+    # enough to satisfy that contract without writing any parquet files.
+    # Without this, tar_make() fails with "Error resolving output location:
+    # missing files" the moment a real assessment/config combo has zero
+    # routed candidates (confirmed directly: this is what happened on the
+    # first real run against GA1, before nli_scores_path was fixed above).
+    if (dir.exists(output_path)) unlink(output_path, recursive = TRUE, force = TRUE)
+    dir.create(output_path, recursive = TRUE, showWarnings = FALSE)
     return(output_path)
   }
 
@@ -402,11 +428,19 @@ build_llm_verification_parquet <- function(
     1, 12
   )
   model_part <- gsub("[^A-Za-z0-9._-]", "_", cfg$model)
-  model_cache <- file.path(cache_dir, paste0("model=", model_part), paste0("prompt=", prompt_hash))
+  # assessment=<id> is its own path segment (not folded into pair_id itself)
+  # so the on-disk cache can never collide across assessments either, even
+  # though pair_id (km/bm/claim_id/work_id) is already collision-safe WITHIN
+  # one assessment -- consistent with every other output path in this
+  # pipeline already being assessment-partitioned.
+  model_cache <- file.path(
+    cache_dir, paste0("model=", model_part), paste0("prompt=", prompt_hash),
+    paste0("assessment=", sanitize_partition_value(assessment_id))
+  )
   dir.create(model_cache, recursive = TRUE, showWarnings = FALSE)
   message(sprintf("[LLM verify %s] cache namespace: %s", assessment_id, model_cache))
 
-  # `id` is pair_id = "<claim_id>__<work_id>", and work_id is a full
+  # `id` is pair_id = "<km>__<bm>__<claim_id>__<work_id>", and work_id is a full
   # "https://openalex.org/W..." URL -- its embedded "/" characters, used
   # unsanitized, silently turn one filename into an unwritable multi-level
   # path (the parent directories never get created), failing every write
@@ -499,13 +533,22 @@ build_llm_verification_parquet <- function(
   todo <- which(!cached)
   if (length(todo)) run_pairs(todo)
 
-  failed_ids <- function() {
-    which(vapply(candidates$pair_id, function(id) {
+  # `check` defaults to the FULL candidate set -- needed for the first call
+  # (below), which must catch both pairs just run above AND any pair left
+  # over failed = TRUE from an earlier, interrupted tar_make() run. Every
+  # subsequent retry pass only needs to re-check the set JUST retried
+  # (nothing else could have changed in the meantime), so callers pass a
+  # restricted `check` there to avoid re-reading every cache file in the
+  # corpus on every retry attempt -- real corpora run tens of thousands of
+  # pairs, and this function used to do a full rescan per retry regardless.
+  failed_ids <- function(check = candidates$pair_id) {
+    bad <- vapply(check, function(id) {
       p <- cache_path(id)
       if (!file.exists(p)) return(FALSE)
       r <- tryCatch(jsonlite::read_json(p, simplifyVector = TRUE), error = function(e) NULL)
       is.null(r) || !("failed" %in% names(r)) || isTRUE(any(as.logical(r$failed)))
-    }, logical(1)))
+    }, logical(1))
+    match(check[bad], candidates$pair_id)
   }
 
   # Retry failures -- usually transient provider errors, not anything wrong
@@ -513,14 +556,17 @@ build_llm_verification_parquet <- function(
   # the measured recovery rate). Without this pass a transient failure sits
   # in the cache as a permanent one until someone deletes the file by hand.
   max_retries <- as.integer(cfg$max_retries %||% 2L)
-  for (attempt in seq_len(max_retries)) {
+  if (max_retries > 0L) {
     bad <- failed_ids()
-    if (!length(bad)) break
-    message(sprintf(
-      "[LLM verify %s]   retry %d/%d: %d pair(s) failed -- usually transient",
-      assessment_id, attempt, max_retries, length(bad)
-    ))
-    run_pairs(bad)
+    for (attempt in seq_len(max_retries)) {
+      if (!length(bad)) break
+      message(sprintf(
+        "[LLM verify %s]   retry %d/%d: %d pair(s) failed -- usually transient",
+        assessment_id, attempt, max_retries, length(bad)
+      ))
+      run_pairs(bad)
+      bad <- failed_ids(candidates$pair_id[bad])
+    }
   }
 
   verdicts <- dplyr::bind_rows(lapply(candidates$pair_id, function(id) {
@@ -534,6 +580,24 @@ build_llm_verification_parquet <- function(
 
   if (!nrow(verdicts)) {
     stop(sprintf("[LLM verify %s] no verdicts were produced.", assessment_id))
+  }
+
+  # A candidate can be missing from `verdicts` entirely -- not just
+  # failed = TRUE -- if its cache file was never written at all (e.g. an
+  # I/O error inside jsonlite::write_json() above, which isn't wrapped in
+  # tryCatch) or came back unreadable. Unlike a recorded failed = TRUE row
+  # (counted via failed_n below), this is otherwise invisible: the pair
+  # just silently disappears from the inner_join() below and from Phase 2's
+  # output entirely, with nothing to distinguish "never reviewed" from
+  # "reviewed and found nothing." Surface it instead.
+  missing_ids <- setdiff(candidates$pair_id, verdicts$pair_id)
+  if (length(missing_ids)) {
+    warning(sprintf(
+      "[LLM verify %s] %d candidate pair(s) never produced a cache entry at all (not even failed = TRUE) -- dropped from output: %s%s",
+      assessment_id, length(missing_ids),
+      paste(utils::head(missing_ids, 5), collapse = ", "),
+      if (length(missing_ids) > 5) ", ..." else ""
+    ), call. = FALSE)
   }
 
   # Guard against the silent-failure mode: if a model ignores the

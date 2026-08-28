@@ -128,10 +128,17 @@ flowchart TD
     llm_server@{ shape: cloud, label: "OpenRouter LLM<br/>(gpt-4o-mini / gemini-2.5-flash / gpt-5)" }
     llm_verify@{ shape: rect, label: "Route NLI-scored pairs (label = REFUTES or SUPPORTS, certain only), tag each with direct_evidence_match from the candidate scope above<br/>then call the LLM per (claim, work) — every routed pair reviewed, none filtered — NLI label + confidence as prior<br/>→ SUPPORTS / REFUTES / NEI + verbatim quote<br/><tt>[llm_verification_parquet]</tt>" }
     llm_scores_db@{ shape: lin-cyl, label: "LLM Verification Scores DB<br/><tt>output/llm_verification/scores/llm_config=&lt;cfg&gt;/assessment=&lt;id&gt;/km=&lt;km&gt;/bm=&lt;bm&gt;/</tt>" }
+    llm_verify_keypaper@{ shape: rect, label: "Verify EVERY key/seed paper via LLM — irrespective of NLI label/confidence (no routing, unlike the citing-works chain above)<br/><tt>[llm_verification_keypaper_parquet]</tt>" }
+    llm_scores_kp_db@{ shape: lin-cyl, label: "Key-paper LLM Verification Scores DB<br/><tt>output/llm_verification/scores_keypaper/llm_config=&lt;cfg&gt;/assessment=&lt;id&gt;/km=&lt;km&gt;/bm=&lt;bm&gt;/</tt>" }
+    qa_llm_verify@{ shape: doc, label: "QA report<br/><tt>[llm_verification_qa_report_html]</tt>" }
 
     %% Edges
     llm_server <--> llm_verify
     llm_verify --> llm_scores_db
+    llm_server <--> llm_verify_keypaper
+    llm_verify_keypaper --> llm_scores_kp_db
+    llm_scores_db --> qa_llm_verify
+    llm_scores_kp_db --> qa_llm_verify
   end
 
   %% Active LLM verification profile (model + routing) feeds the verification call
@@ -143,6 +150,10 @@ flowchart TD
   %% match set computed in the data-prep stage above (see llm_scope there)
   nli_scores_db --> llm_verify
   llm_scope_db --> llm_verify
+
+  %% Input to the key-paper LLM verification chain: Phase 1's own key-paper
+  %% NLI scores (ALL of them -- no label/certainty routing for this chain)
+  nli_scores_kp_db --> llm_verify_keypaper
 
   %% Force `llm_verification` to sit below `nli_assessment` (subgraph-to-subgraph
   %% edge). Made invisible via linkStyle below so it doesn't add visual noise.
@@ -158,19 +169,19 @@ flowchart TD
   classDef qa_report   fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px;
 
   %% Hide the data → nli_assessment subgraph-level constraint edge (index 37).
-  %% Hide the nli_assessment → llm_verification one the same way (index 44,
+  %% Hide the nli_assessment → llm_verification one the same way (index 49,
   %% last edge in the file). Recomputed by hand-counting every edge in
-  %% source order after moving llm_scope/llm_scope_db (and their edges) into
-  %% the `data` subgraph -- pure LOD-derived matching, no LLM call for
-  %% naive_bm/complete_bm, so it belongs with the rest of data prep rather
-  %% than the Phase 2 LLM Verification subgraph it merely feeds. If you add
-  %% or remove edges above either line, recount and bump both indices.
+  %% source order after adding the key-paper LLM verification chain
+  %% (llm_verify_keypaper/llm_scores_kp_db) and the qa_llm_verify QA report
+  %% node to the llm_verification subgraph -- 5 new edges, all after index
+  %% 37, which is why only the second index moved (44 -> 49). If you add or
+  %% remove edges above either line, recount and bump both indices.
   linkStyle 37 stroke:transparent,fill:none;
-  linkStyle 44 stroke:transparent,fill:none;
+  linkStyle 49 stroke:transparent,fill:none;
 
   class config_file input_file;
   class assessment_list,assessment_id,nli_active,llm_active config;
-  class citing_db,refs_db,key_messages_db,zotero_db,works_db,nli_ready_db,nli_scores_db,llm_scope_db,llm_scores_db,snowball_db,nli_scores_kp_db database;
-  class build_refs,build_key_messages,download_zotero,download_works,snowball,nli_scoring,nli_segment,nli_keypaper_scoring,llm_scope,llm_verify processing;
+  class citing_db,refs_db,key_messages_db,zotero_db,works_db,nli_ready_db,nli_scores_db,llm_scope_db,llm_scores_db,llm_scores_kp_db,snowball_db,nli_scores_kp_db database;
+  class build_refs,build_key_messages,download_zotero,download_works,snowball,nli_scoring,nli_segment,nli_keypaper_scoring,llm_scope,llm_verify,llm_verify_keypaper processing;
   class sparql,zotero_api,openalex,nli_server,llm_server helper;
-  class qa_bm_split,qa_nli_scores qa_report;
+  class qa_bm_split,qa_nli_scores,qa_llm_verify qa_report;

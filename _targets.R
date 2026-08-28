@@ -902,6 +902,7 @@ list(
       llm_verification_system_prompt_file,
       llm_verification_user_prompt_file,
       llm_candidate_scope_parquet,
+      granularity,
       nli_scores_by_claim_evidence
     ),
     pattern = map(assessment, nli_ready_evidence_parquet, llm_candidate_scope_parquet),
@@ -917,6 +918,128 @@ list(
     # concurrently.
     deployment = "main",
     garbage_collection = TRUE
+  ),
+
+  # Target 2h4b' (QA, key papers): full-coverage LLM verification of key
+  # papers — QA sanity check, NOT the main Phase 2 corpus. Reviews EVERY key
+  # paper's NLI-scored pair (the same relation == "keypaper" snowball set
+  # nli_scores_keypaper_evidence itself scores), irrespective of NLI's own
+  # label/confidence — unlike the main citing-works chain above, which is
+  # routed by nli_labels/nli_certainty purely for cost control, key papers
+  # are a small, bounded, high-importance set where every one is worth an
+  # independent LLM check. See R/build_llm_verification_keypaper_parquet.R
+  # for the full design (in particular why it duplicates the orchestration
+  # loop rather than calling build_llm_verification_parquet() — that
+  # function was only just stabilized against a pair_id collision bug and
+  # shouldn't be touched again for an unrelated variant). Writes to its own
+  # output/llm_verification/scores_keypaper/ root — never collides with or
+  # invalidates the main citing-works output tree.
+  #
+  # NEW PAID API SURFACE, same caution as llm_verification_parquet and
+  # nli_scores_keypaper_evidence themselves: a plain tar_make()/
+  # tar_make(names = "report_fact_checker") now also dispatches real
+  # OpenRouter calls for every key paper, not just the routed citing-works
+  # subset. Use tar_make(names = ..., shortcut = TRUE) to render against
+  # on-disk data without triggering a fresh run.
+  tar_target(
+    llm_verification_keypaper_parquet,
+    build_llm_verification_keypaper_parquet(
+      assessment,
+      nli_ready_evidence_keypaper_parquet,
+      file.path(
+        "output/nli_scores_evidence_keypaper", paste0("granularity=", granularity),
+        paste0("nli_config=", nli_active), paste0("assessment=", assessment$id)
+      ),
+      nli_active,
+      llm_verification_active,
+      llm_verification_config,
+      llm_verification_system_prompt_file,
+      llm_verification_user_prompt_file,
+      nli_scores_keypaper_evidence
+    ),
+    pattern = map(assessment, nli_ready_evidence_keypaper_parquet),
+    format = "file",
+    deployment = "main",
+    garbage_collection = TRUE
+  ),
+
+  # Target 2h4b'' (QA data): Phase 2 (LLM verification) scoring QA report
+  # data — sibling to nli_scores_qa_data (which QAs Phase 1). Single-
+  # active-granularity, NOT cross()'d over nli_granularities like
+  # nli_scores_qa_data is — llm_verification_parquet only ever reflects
+  # whichever granularity is currently active (single active
+  # nli_ready_evidence_parquet/nli_active, pattern = map(assessment, ...),
+  # no cross()), so there is nothing to cross here either. See
+  # R/build_llm_verification_qa_data.R.
+  tar_target(
+    llm_verification_qa_data,
+    build_llm_verification_qa_data(
+      assessment,
+      llm_verification_parquet,
+      works_citing_parquet,
+      llm_verification_active,
+      nli_active,
+      "output/tables",
+      per_claim_cap = 50L,
+      llm_verification_keypaper_path = llm_verification_keypaper_parquet,
+      works_path = works_parquet
+    ),
+    pattern = map(
+      assessment, llm_verification_parquet, llm_verification_keypaper_parquet,
+      works_parquet, works_citing_parquet
+    ),
+    format = "file",
+    # Same OOM caution as llm_verification_parquet above — collect()s the
+    # full per-assessment reviewed table before capping.
+    deployment = "main",
+    garbage_collection = TRUE
+  ),
+
+  # Target 2h4b''' (QA figures): the two Phase 2 QA figures — a
+  # confidence-decile agreement line and an NLI→LLM alluvial diagram, each
+  # with a key-paper overlay (see R/build_llm_verification_qa_figures.R for
+  # why a literal ternary plot was rejected for Phase 2). Separate target
+  # from llm_verification_qa_data itself — same split as nli_overview_data
+  # → nli_overview_figures — so replotting doesn't require recollecting the
+  # raw scored table.
+  tar_target(
+    llm_verification_qa_figures,
+    build_llm_verification_qa_figures(llm_verification_qa_data, "output/figures"),
+    pattern = map(llm_verification_qa_data),
+    format = "file"
+  ),
+
+  tar_target(
+    llm_verification_qa_report_qmd,
+    "input/reports/QA_LLM_Verification_Report.qmd",
+    format = "file"
+  ),
+
+  tar_target(
+    llm_verification_qa_report_html,
+    {
+      # Referenced only to establish the DAG dependency — the qmd itself
+      # re-reads llm_verification_qa_data's actual value via tar_read_raw()
+      # at render time, same convention as nli_scores_qa_report_html.
+      llm_verification_qa_report_qmd
+      llm_verification_qa_figures
+      x <- readRDS(llm_verification_qa_data)
+      out <- paste0("QA_LLM_Verification_Report_", x$assessment, "_", x$llm_active, ".html")
+      quarto::quarto_render(
+        "input/reports/QA_LLM_Verification_Report.qmd",
+        output_file = out, execute_dir = getwd(),
+        execute_params = list(assessment_id = x$assessment, llm_config = x$llm_active)
+      )
+      dir.create("output/reports", recursive = TRUE, showWarnings = FALSE)
+      file.rename(file.path("input/reports", out), file.path("output/reports", out))
+      file.path("output/reports", out)
+    },
+    pattern = map(llm_verification_qa_data, llm_verification_qa_figures),
+    format = "file",
+    # Same concurrent-quarto_render() guard as nli_scores_qa_report_html/
+    # bm_split_report_html — avoids two branches racing on the same source
+    # .qmd and cross-contaminating each other's output.
+    deployment = "main"
   ),
 
   # Target 2h3: NLI overview figures — label split (overall/per-KM/per-BM),
@@ -1189,17 +1312,26 @@ list(
       # tar_read(), and quarto_render() re-reads the qmd from disk by path.
       # Without nli_bm_explorer_html/td_doc_html/report_refutes_funnel_html/
       # report_supports_funnel_html/bm_split_report_html/
-      # nli_scores_qa_report_html, tar_make() would happily render the
-      # report against stale/missing dependents rather than building them
-      # first. Without qmd_fact_checker (file-hash tracked), targets has no
-      # visibility into the qmd's own content — editing the qmd (prose,
-      # code chunks, or YAML header, e.g. embed-resources) would silently
-      # NOT invalidate this target.
+      # nli_scores_qa_report_html/llm_verification_qa_report_html,
+      # tar_make() would happily render the report against stale/missing
+      # dependents rather than building them first. Without
+      # qmd_fact_checker (file-hash tracked), targets has no visibility
+      # into the qmd's own content — editing the qmd (prose, code chunks,
+      # or YAML header, e.g. embed-resources) would silently NOT invalidate
+      # this target.
+      #
+      # llm_verification_qa_report_html pulls in a genuinely NEW paid-API
+      # dependency here: llm_verification_keypaper_parquet (see that
+      # target's own comment) — a bare tar_make()/tar_make(names =
+      # "report_fact_checker") now also dispatches real OpenRouter calls
+      # for every key paper, not just the routed citing-works subset that
+      # llm_verification_parquet already made this target dependent on.
       nli_bm_explorer_html
       report_refutes_funnel_html
       report_supports_funnel_html
       bm_split_report_html
       nli_scores_qa_report_html
+      llm_verification_qa_report_html
       qmd_fact_checker
       td_doc_html
       # See td_doc_html's own comment: embed-resources: true means the
@@ -1225,7 +1357,7 @@ list(
     report_output_dir,
     build_report_output_dir(
       report_fact_checker,
-      c(td_doc_html, report_refutes_funnel_html, report_supports_funnel_html, bm_split_report_html, nli_scores_qa_report_html),
+      c(td_doc_html, report_refutes_funnel_html, report_supports_funnel_html, bm_split_report_html, nli_scores_qa_report_html, llm_verification_qa_report_html),
       claude_md,
       "output/reports"
     ),

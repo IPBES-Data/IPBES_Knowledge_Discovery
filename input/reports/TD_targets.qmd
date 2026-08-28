@@ -466,8 +466,11 @@ but `tag_direct_evidence_match()` tags each one against
 `llm_candidate_scope_parquet` (see
 [TD_NLI_LLM_two_phase.qmd](TD_NLI_LLM_two_phase.html#candidate-scoping) for
 why this used to be a filter and no longer is).
-Resumable per-pair JSON cache under
-`output/llm_verification/raw/model=<model>/prompt=<hash>/`; final output —
+Resumable per-`(km, bm, claim_id, work_id)` JSON cache under
+`output/llm_verification/raw/model=<model>/prompt=<hash>/assessment=<id>/`
+— keyed on the full 4-part identity, not `claim_id`+`work_id` alone, for
+the same reason `tag_direct_evidence_match()` above matches on the full
+`(km, bm, claim_id, work_id)` key rather than `claim_id` alone; final output —
 `nli_label`, `llm_label`, `llm_agrees`, `direct_evidence_match`, a required
 verbatim `quote` (demoted to `NOT_ENOUGH_INFO` if fabricated), `explanation`
 — written to
@@ -494,6 +497,121 @@ values. This replaced an earlier truth/citing-document LLM design
 `alignement_scores_parquet`, driven by an `analysis:` config block) — all
 of that source has been removed; see [TD_LLM_approach.qmd](TD_LLM_approach.html)
 for why.
+
+## Target 2h4b' (QA, key papers): `llm_verification_keypaper_parquet` — full-coverage key-paper LLM verification
+
+**Source:** `R/build_llm_verification_keypaper_parquet.R`
+
+QA sanity check, **not** the main Phase 2 corpus — mirrors
+`nli_scores_keypaper_evidence`'s own relationship to the main NLI chain.
+Reviews **every** key/seed paper's NLI-scored pair, irrespective of
+`nli_labels`/`nli_certainty` — unlike `llm_verification_parquet` above,
+which routes by those fields purely for cost control on a millions-of-rows
+corpus, key papers are a small, bounded, high-importance set (the actual
+evidence a BM was written from) where every one is worth an independent
+check. Structural sibling of `build_llm_verification_parquet()`, same
+"separate file, don't touch the delicate already-working builder"
+precedent `R/build_nli_ready_evidence_keypaper_parquet.R` already documents
+for its own Phase-1 counterpart — doubly justified here since that
+function was only just stabilized against a `pair_id` collision bug (fixed
+in the same turn this chain was added) and shouldn't be touched again for
+an unrelated variant.
+
+Reuses directly (calls, does not duplicate) the small generic helpers
+already in `build_llm_verification_parquet.R` —
+`build_llm_verification_chat()`, `llm_verification_output_type()`,
+`normalise_llm_verification()`, `quote_is_verbatim()`, `render_template()`,
+`load_text_file()`, `nli_route_label()`, and critically
+`select_llm_verification_candidates()` itself, which is already fully
+path-parameterized (not hardcoded to the citing-works tree) and already
+supports "no filter" via `nli_labels = NULL, nli_certainty = NULL` —
+exactly what full coverage needs, with no changes to that function
+required. Does duplicate the chunking/`run_pairs()`/retry/cache-write/
+output-assembly orchestration loop, adapted to the keypaper paths. No
+`direct_evidence_match` tagging — that concept (does a *citing* work trace
+back to a seed reference matching the claim's evidence braces) doesn't
+apply to a key paper, which *is* a seed reference itself; the column is
+omitted from this chain's output schema entirely rather than a meaningless
+always-FALSE/NA placeholder.
+
+Reads premise from `nli_ready_evidence_keypaper_parquet`'s own
+per-assessment path and NLI scores from
+`output/nli_scores_evidence_keypaper/granularity=<g>/nli_config=<cfg>/assessment=<id>/`.
+Writes to its own `output/llm_verification/scores_keypaper/` root (cache
+under `output/llm_verification/raw_keypaper/`) — never collides with or
+invalidates the main citing-works output tree. Takes
+`nli_scores_keypaper_evidence` as a bare (DAG-dependency-only) argument,
+same convention `llm_verification_parquet` already uses for
+`nli_scores_by_claim_evidence` — runs automatically as part of a bare
+`tar_make()`.
+
+**New paid API surface**, same caution as `llm_verification_parquet` and
+`nli_scores_keypaper_evidence` themselves: a plain `tar_make()`/
+`tar_make(names = "report_fact_checker")` now also dispatches real
+OpenRouter calls for every key paper, not just the routed citing-works
+subset. Use `tar_make(names = ..., shortcut = TRUE)` to render against
+on-disk data without triggering a fresh run.
+
+## Target 2h4b'' (QA data/figures): `llm_verification_qa_data`, `llm_verification_qa_figures` — Phase 2 QA report
+
+**Source:** `R/build_llm_verification_qa_data.R`, `R/build_llm_verification_qa_figures.R`
+
+Sibling to `nli_scores_qa_data`/`nli_scores_qa_figures` (which QA Phase 1).
+Single-active-granularity, **not** `cross()`'d over `nli_granularities` —
+`llm_verification_parquet` only ever reflects whichever granularity is
+currently active, so there's nothing to cross here either.
+`llm_verification_parquet`'s own output already carries everything needed
+per row (no re-join of Phase 1's scored table needed); only
+`title`/`abstract`/`doi` get joined in, from `works_citing_parquet` for
+citing works and from `works_parquet` for key papers (a distinct lookup
+path — key papers are SEED works, not in the citing-works dataset).
+
+Computes an `nli_label` × `llm_label` contingency once (`label_flow`),
+reused both for the report's confusion-matrix table and as Figure 2's
+direct input, plus a per-NLI-confidence-decile `llm_agrees` rate (Figure
+1's input) and, when `llm_verification_keypaper_parquet` has data, the
+key-paper validation fields (`keypaper_n`, `keypaper_llm_supports_pct`,
+`keypaper_llm_agrees_pct`, and an **uncapped**
+`keypaper_flagged_widget` DT table of every key paper the LLM did *not*
+confirm as SUPPORTS — key papers are a bounded, small set, so unlike the
+main claims table there's no `per_claim_cap` need here).
+
+**A literal ternary plot (Phase 1's own QA figure) was considered and
+rejected** for Phase 2: the LLM emits one categorical verdict, not a
+3-part probability composition, so a simplex density would really just be
+NLI's own chart wearing a Phase-2 label. Two figures instead, in a new
+file — deliberately does **not** modify `R/build_nli_scores_qa_figures.R`/
+`nli_scores_qa_ternary_plot()`, same "duplicate, don't call" discipline
+protecting Phase-1-adjacent (explicitly locked) code from unrelated
+invalidation:
+
+1. `llm_verification_qa_decile_plot()` — X = NLI-confidence decile, Y = %
+   of reviewed pairs where `llm_agrees`, one line (point size = n). Key
+   papers overlay the **same** `llm_agrees` metric — individual jittered
+   points at each key paper's own confidence, plus a dashed aggregate
+   reference line — so the two series are directly comparable on one
+   y-axis; the "% confirmed SUPPORTS" framing is deliberately kept out of
+   this chart's own metric and lives in the report's plain-text summary
+   bullets instead.
+2. `llm_verification_qa_alluvial_plot()` — an `nli_label` → `llm_label`
+   flow diagram (`ggalluvial::geom_alluvium()`/`geom_stratum()`, a **new
+   dependency** — already installed but not previously referenced in this
+   project; no `renv.lock`/`DESCRIPTION` exists here to update) coloured
+   by agreement, with key papers shown as a **side-by-side mini-alluvial**
+   (`patchwork::wrap_plots()`, also new) rather than an overlaid second
+   flow, since key-paper `n` is typically orders of magnitude smaller than
+   the full reviewed corpus and would be visually invisible on the main
+   flow's scale.
+
+Empty-state guard checks `dir.exists()` **and** that the path actually
+contains `.parquet` files (same pattern `tag_direct_evidence_match()`
+uses), not `dir.exists()` alone, since `llm_verification_parquet`/
+`llm_verification_keypaper_parquet` can return their `output_path` even
+when nothing was written. Rendered via `QA_LLM_Verification_Report.qmd`
+(`llm_verification_qa_report_html` target), filename
+`QA_LLM_Verification_Report_<assessment>_<llm_config>.html` (`llm_config`
+always suffixed — no unsuffixed-default exception, unlike
+`nli_model_suffix()`'s historical one for `"deberta_zeroshot"`).
 
 ## Target 2h4c: `{refutes,supports}_funnel_{data,figures,tables}` — label funnels
 

@@ -396,12 +396,23 @@ meaningfully different failure to audit.
 Two layers, doing different jobs:
 
 - **Resumable per-pair cache** (the one that matters for cost and crash
-  safety): one JSON file per `(claim_id, work_id)` pair under
-  `output/llm_verification/raw/model=<model>/prompt=<hash>/`, where the hash
-  covers the system prompt, the user template, **and** the output schema
-  (adding a field to the schema silently reusing cached responses that
-  cannot contain it was a real bug in the sibling project before the schema
-  was added to the hash — ported here from the start instead of rediscovered).
+  safety): one JSON file per `(km, bm, claim_id, work_id)` pair under
+  `output/llm_verification/raw/model=<model>/prompt=<hash>/assessment=<id>/`,
+  where the hash covers the system prompt, the user template, **and** the
+  output schema (adding a field to the schema silently reusing cached
+  responses that cannot contain it was a real bug in the sibling project
+  before the schema was added to the hash — ported here from the start
+  instead of rediscovered). The cache key is `(km, bm, claim_id, work_id)`,
+  not `(claim_id, work_id)` alone — `claim_id` is only unique *within* one
+  BM (e.g. every BM's first `bm_description` claim is literally
+  `"bm_description-01"`), so a `(claim_id, work_id)`-only key let two
+  different BMs' claims collide and serve each other's cached verdicts
+  whenever they cited the same work and landed on the same claim ordinal —
+  a real bug, caught and fixed by measuring collisions directly against the
+  real routed corpus (11-40% of rows depending on assessment/granularity)
+  before it was ever run for real. The `assessment=<id>/` path segment
+  closes the same class of gap across assessments, since the cache
+  directory isn't otherwise assessment-scoped.
 - **Provider-side automatic prefix caching** (OpenAI, Google) — a side
   benefit of prompt ordering (system → fixed instructions → variable
   per-pair content), not something explicitly engineered here since Phase 2
@@ -540,6 +551,8 @@ for every row.
   used here
 - [R/score_one_claim.R](R/score_one_claim.R) — Phase 1 implementation
 - [R/build_llm_verification_parquet.R](R/build_llm_verification_parquet.R) — Phase 2 implementation
+- [R/build_llm_verification_keypaper_parquet.R](R/build_llm_verification_keypaper_parquet.R) — full-coverage key-paper LLM verification, irrespective of NLI label/confidence
 - [R/build_llm_candidate_scope_parquet.R](R/build_llm_candidate_scope_parquet.R) — the `direct_evidence_match` matching chain (formerly `subset: "default"` candidate scoping)
+- `QA_LLM_Verification_Report.qmd` — QA report for Phase 2, the equivalent of `QA_NLI_Scores_Report.qmd` for Phase 1
 - `Categorisation_Literature/R/llm_epistemology.R` (sibling project) — the
   ported architecture's origin
