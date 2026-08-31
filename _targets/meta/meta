@@ -3318,8 +3318,6 @@ nli_scores_qa_report_html|pattern|bf26e1af1bf63204|2bec44dbdd7f4cdb||2066827019|
 apply_candidate_scope|function|33cac4455d55f216|||||||||||||||
 llm_scope_qa_html|function|5310c9324570a902|||||||||||||||
 build_llm_scope_qa_data|function|c109ef308c155451|||||||||||||||
-mmd_workflow_nli|stem|911c7b52a44044fc|291e3b8bb9b9de4a|2c530c1562a7fbd1|-48567711|input/mmd/workflow_nli.mmd|t20692.6497538154s|s11392b|11392|file|local|vector|||1.964||
-diagram_workflow_nli|stem|97df427cbb57ec3b|3b2e422741bbb8f9|d676287768c1a796|542749245|output/figures/workflow_nli.svg*output/figures/workflow_nli.png|t20692.6499186388s|s466626b|466626|file|local|vector|||3.547||
 config_file|stem|0e12f5b362252bc4|8a509d56b3459c7e|2c530c1562a7fbd1|-615108176|input/config.yaml|t20692.5956712368s|s15087b|15087|file|local|vector|||1.986||
 llm_verification_config|stem|1555a5ed92daddc0|4ed5cbe2ab75cbcb|58ecec7d99fdd615|-693781744||t20692.6578168344s|s210b|210|rds|local|vector|||0.001||
 workers|stem|d1268f3d5a6c6f5a|19deb56d55aa4500|58ecec7d99fdd615|845121955||t20692.6578171422s|s49b|49|rds|local|vector|||0||
@@ -3340,6 +3338,15 @@ llm_verification_parquet|pattern|49018fc66dfcb955|53452df9be1b860d||1779700024||
 llm_verification_qa_data|pattern|0bab82a5db8fd152|43edd28564b2f135||127702202||||12065223|file|local|vector||llm_verification_qa_data_9b4eb1949e1d98f9|4.063||
 llm_verification_qa_figures_b40dc56fbf4e4859|branch|24d6dbaadcfcc683|626983ef359a7b05|9958f30823ce34a9|117765214|output/figures/llm_verification_qa_decile_GA1_openrouter_cheap.png*output/figures/llm_verification_qa_alluvial_GA1_openrouter_cheap.png|t20696.544265402s|s341375b|341375|file|local|vector|llm_verification_qa_figures||0.726|Some strata appear at multiple axes.. Some strata appear at multiple axes.. Some strata appear at multiple axes.. Some strata appear at multiple axes.. Some strata appear at multiple axes.. Some strata appear at multiple axes.|
 llm_verification_qa_figures|pattern|4fb27d9507473f58|626983ef359a7b05||190634191||||341375|file|local|vector||llm_verification_qa_figures_b40dc56fbf4e4859|0.726||
+llm_verification_qa_report_html_5b68248d107b4e94|branch|e15cc33d0574e451|4dfed1e774a895be|8ac11c8bdaccfc95|-869310712|output/reports/QA_LLM_Verification_Report_GA1_openrouter_cheap.html|t20696.5456927162s|s22199146b|22199146|file|local|vector|llm_verification_qa_report_html||14.855||
+llm_verification_qa_report_html|pattern|50cf0d237979375f|4dfed1e774a895be||673073359||||22199146|file|local|vector||llm_verification_qa_report_html_5b68248d107b4e94|14.855||
+nli_training_data_9b4eb1949e1d98f9|branch|8dd6453227554f7d|9707d3acf052d593|7398a46f64dc7639|189359677|output/nli_training/granularity=atomic_bm/nli_config=bge_m3_zeroshot_atomic_bm/assessment=GA1|t20696.6330272774s|s257721b|257721|file|local|vector|nli_training_data||4.378|Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r. Invalid metadata$r|
+nli_training_data|pattern|11974ebbbf9e2eca|9707d3acf052d593||-323110918||||257721|file|local|vector||nli_training_data_9b4eb1949e1d98f9|4.378||
+nli_training_qa_report_qmd|stem|2d47aee31017ebde|ddb87ecefa128b0f|2c530c1562a7fbd1|1450043268|input/reports/QA_NLI_Training_Data_Report.qmd|t20696.6219187199s|s2989b|2989|file|local|vector|||1.59||
+nli_training_qa_data_064c42818dca1522|branch|e401dc434003a2f2|aaa1b8cce9779a9a|ed333130bebbcc00|-722322381|output/tables/nli_training_qa_GA1_bge_m3_zeroshot_atomic_bm_atomic_bm.rds|t20696.6339182303s|s536650b|536650|file|local|vector|nli_training_qa_data||1.664||
+nli_training_qa_data|pattern|7935c5bc37c296e0|aaa1b8cce9779a9a||-626589150||||0|file|local|vector||nli_training_qa_data_064c42818dca1522|0||
+nli_training_qa_report_html_69bf458b3b1575e0|branch|219c42985071c7c2|a57ac7fd2017c4bf|ac714aa37ef37ee8|-933042615|output/reports/QA_NLI_Training_Data_Report_GA1_bge_m3_zeroshot_atomic_bm_atomic_bm.html|t20696.6362461404s|s2509592b|2509592|file|local|vector|nli_training_qa_report_html||3.022||
+nli_training_qa_report_html|pattern|d66425ac2b19bec7|a57ac7fd2017c4bf||1221716086||||2509592|file|local|vector||nli_training_qa_report_html_69bf458b3b1575e0|3.022||
 resolve_lod_endpoint|function|6d7679ec1f7f22d4
 extract_claim_evidence_tokens|function|aa4956e82ec1af9f
 infer_zotero_group_id|function|10e164ee81c0a6e4
@@ -3349,6 +3356,7 @@ granularity_suffix|function|bc4a30f07150c295
 nli_model_suffix|function|fd260407234354bb
 n|object|6e95f3b2b5476d92
 nli_scores_qa_datatable|function|54248e0c817af46e
+build_nli_training_qa_data|function|7a3ce58b1e66379f
 branch_output_dir|function|6f401328a4b9575a
 build_report_output_dir|function|aad767951ee6c61d
 assessment_ids|function|d880b5ff5631da3a
@@ -3356,6 +3364,7 @@ find_orphaned_nli_scores|function|7471f8b9bd937ace
 nli_config_for_granularity|function|623e07d65a3951a5
 assessment_graph_iri|function|19f33878d533a331
 nli_health|function|3785a2c2aa7991fd
+build_nli_training_data|function|4ecebb4d7cf0f5fd
 sparql_query|function|d4367964c6f3748f
 build_pipeline_mmd|function|243170c14499c111
 fuseki_process_env|object|116287f287444c70
@@ -3382,7 +3391,7 @@ nli_label_levels|object|7ec76f7bc5812e0d
 bm_highlight_regex_escape|function|7c4020ec73b4ecde
 zotero_item_to_row|function|4d66e706ea340900
 github_blob_sha|function|0002b259c2c0c9a7
-rl|object|5802e89973c7f2c6
+rl|object|d8c747556c643a95
 render_mmd|function|ec53eee26cafd7b2
 extract_zotero_key|function|b31d8ad3962b21e8
 llm_verification_qa_keypaper_datatable|function|3248a582c53f0f45
@@ -3467,5 +3476,5 @@ build_nli_ready_evidence_parquet|function|7f7b381b3d8f6950
 build_nli_ready_evidence_keypaper_parquet|function|ba521cb0e4d49fd0
 build_bm_split_highlighted|function|8b02a8897a8075a8
 build_llm_candidate_scope_parquet|function|b486a771b2b0c718
-llm_verification_qa_report_html_5b68248d107b4e94|branch|e15cc33d0574e451|4dfed1e774a895be|8ac11c8bdaccfc95|-869310712|output/reports/QA_LLM_Verification_Report_GA1_openrouter_cheap.html|t20696.5456927162s|s22199146b|22199146|file|local|vector|llm_verification_qa_report_html||14.855||
-llm_verification_qa_report_html|pattern|50cf0d237979375f|4dfed1e774a895be||673073359||||22199146|file|local|vector||llm_verification_qa_report_html_5b68248d107b4e94|14.855||
+mmd_workflow_nli|stem|4a37292d39d953ca|291e3b8bb9b9de4a|2c530c1562a7fbd1|-48567711|input/mmd/workflow_nli.mmd|t20696.6405270141s|s13008b|13008|file|local|vector|||1.663||
+diagram_workflow_nli|stem|1cac66cf7d15ff52|3b2e422741bbb8f9|67fa558488d7bcbb|542749245|output/figures/workflow_nli.svg*output/figures/workflow_nli.png|t20696.6410323809s|s540828b|540828|file|local|vector|||20.921||

@@ -159,6 +159,35 @@ flowchart TD
   %% edge). Made invisible via linkStyle below so it doesn't add visual noise.
   nli_assessment --> llm_verification
 
+  subgraph training_export["NLI Fine-Tuning Training Data Export"]
+    direction TB
+
+    %% Nodes
+    training_extract@{ shape: rect, label: "Extract fine-tuning training data from LLM-verified pairs<br/>positives: key papers LLM-confirmed SUPPORTS w/ verbatim quote<br/>negatives: NLI confident + LLM said NOT_ENOUGH_INFO (downsampled to match positives)<br/>refutes: NLI + LLM both REFUTES (unconditional)<br/><tt>[nli_training_data]</tt>" }
+    training_db@{ shape: lin-cyl, label: "Training Data DB<br/><tt>output/nli_training/granularity=&lt;gran&gt;/nli_config=&lt;cfg&gt;/assessment=&lt;id&gt;/</tt>" }
+    qa_training@{ shape: doc, label: "QA report<br/><tt>[nli_training_qa_report_html]</tt>" }
+
+    %% Edges
+    training_extract --> training_db
+    training_db --> qa_training
+  end
+
+  %% Inputs to training-data export: both Phase 2 LLM verification chains
+  %% (citing-works + key-paper) supply the labelled pairs, plus title/
+  %% abstract lookups from the works DBs each chain's works come from.
+  %% Fine-tuning itself is a manual, local, standalone step
+  %% (scripts/training/train_nli.py) -- not wired into this pipeline, so it
+  %% has no node here.
+  llm_scores_db --> training_extract
+  llm_scores_kp_db --> training_extract
+  works_db --> training_extract
+  citing_db --> training_extract
+
+  %% Force `training_export` to sit below `llm_verification` (subgraph-to-
+  %% subgraph edge). Made invisible via linkStyle below so it doesn't add
+  %% visual noise.
+  llm_verification --> training_export
+
   %% Styles
   classDef input_file  fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1.5px;
   classDef config      fill:#ecfccb,stroke:#65a30d,color:#14532d,stroke-width:1px;
@@ -169,19 +198,20 @@ flowchart TD
   classDef qa_report   fill:#ede9fe,stroke:#7c3aed,color:#3b0764,stroke-width:1.5px;
 
   %% Hide the data → nli_assessment subgraph-level constraint edge (index 37).
-  %% Hide the nli_assessment → llm_verification one the same way (index 49,
+  %% Hide the nli_assessment → llm_verification one the same way (index 49),
+  %% and the llm_verification → training_export one the same way (index 56,
   %% last edge in the file). Recomputed by hand-counting every edge in
-  %% source order after adding the key-paper LLM verification chain
-  %% (llm_verify_keypaper/llm_scores_kp_db) and the qa_llm_verify QA report
-  %% node to the llm_verification subgraph -- 5 new edges, all after index
-  %% 37, which is why only the second index moved (44 -> 49). If you add or
-  %% remove edges above either line, recount and bump both indices.
+  %% source order after adding the training_export subgraph (2 internal
+  %% edges + 4 cross-subgraph input edges + 1 force-ordering edge, all after
+  %% index 49, which is why only the third index is new). If you add or
+  %% remove edges above any line, recount and bump every index below it.
   linkStyle 37 stroke:transparent,fill:none;
   linkStyle 49 stroke:transparent,fill:none;
+  linkStyle 56 stroke:transparent,fill:none;
 
   class config_file input_file;
   class assessment_list,assessment_id,nli_active,llm_active config;
-  class citing_db,refs_db,key_messages_db,zotero_db,works_db,nli_ready_db,nli_scores_db,llm_scope_db,llm_scores_db,llm_scores_kp_db,snowball_db,nli_scores_kp_db database;
-  class build_refs,build_key_messages,download_zotero,download_works,snowball,nli_scoring,nli_segment,nli_keypaper_scoring,llm_scope,llm_verify,llm_verify_keypaper processing;
+  class citing_db,refs_db,key_messages_db,zotero_db,works_db,nli_ready_db,nli_scores_db,llm_scope_db,llm_scores_db,llm_scores_kp_db,snowball_db,nli_scores_kp_db,training_db database;
+  class build_refs,build_key_messages,download_zotero,download_works,snowball,nli_scoring,nli_segment,nli_keypaper_scoring,llm_scope,llm_verify,llm_verify_keypaper,training_extract processing;
   class sparql,zotero_api,openalex,nli_server,llm_server helper;
-  class qa_bm_split,qa_nli_scores,qa_llm_verify qa_report;
+  class qa_bm_split,qa_nli_scores,qa_llm_verify,qa_training qa_report;

@@ -1,0 +1,94 @@
+---
+title: QA NLI Training Data Report
+subtitle: QA check for the NLI fine-tuning training data export
+date: today
+params:
+  assessment_id: "GA1"
+  nli_config: "bge_m3_zeroshot_atomic_bm"
+  granularity: "atomic_bm"
+format:
+    html:
+        toc: true
+        toc-depth: 4
+        embed-resources: true
+        code-fold: true
+        code-summary: 'Show the code'
+        keep-md: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(DT)
+
+# No report_files_dir/copy_into_report_files() here, and no source()ing of
+# R/build_nli_training_qa_data.R either -- quarto::quarto_render() runs this
+# file in its own fresh session that never sources R/*.R (same reasoning
+# every other QA_*_Report.qmd in this project already documents). The DT
+# widget was already built and cached by build_nli_training_qa_data() --
+# library(DT) above is what lets the cached htmlwidget object render
+# correctly once reloaded.
+expected_name <- function(ext) {
+  sprintf(
+    "nli_training_qa_%s_%s_%s.%s",
+    params$assessment_id, params$nli_config, params$granularity, ext
+  )
+}
+
+data_path <- targets::tar_read_raw("nli_training_qa_data") |>
+  (\(x) x[basename(x) == expected_name("rds")])()
+x <- readRDS(data_path)
+```
+
+# `r params$assessment_id` -- nli_config: `r params$nli_config` -- granularity: `r params$granularity`
+
+## Methodology
+
+This report is a **QA check on the NLI fine-tuning training data export
+(`R/build_nli_training_data.R`), not a scoring result in its own right** —
+it lets every exported `(premise, hypothesis, label)` pair be spot-checked
+by eye before spending time fine-tuning on it. See `TD_NLI_training.qmd`
+for the full training-data strategy this export implements.
+
+Positives are key papers the LLM confirmed `SUPPORTS` with a real verbatim
+quote — not every cited paper unconditionally, since only a small fraction
+of key papers actually have explicit abstract-level support for their own
+claim. Negatives are real NLI/LLM disagreements (NLI called `SUPPORTS` or
+`REFUTES` confidently, but the LLM's grounded, quote-checked review said
+`NOT_ENOUGH_INFO`), downsampled to roughly match the positive count.
+`REFUTES` examples are the real `nli_label == llm_label == "REFUTES"` rows,
+included unconditionally.
+
+```{r}
+#| label: empty-check
+#| results: asis
+if (isTRUE(x$empty)) {
+  cat("No training data available yet for this assessment/config/granularity combination — the export hasn't produced output here.\n\n")
+  knitr::knit_exit()
+}
+```
+
+```{r}
+#| label: summary
+#| results: asis
+cat(sprintf("- **%d** training pairs exported in total\n", x$n_total))
+cat("- Class balance:\n")
+for (lab in names(x$label_counts)) {
+  cat(sprintf("  - `%s`: %d\n", lab, x$label_counts[[lab]]))
+}
+cat("- By source:\n")
+for (src in names(x$source_counts)) {
+  cat(sprintf("  - `%s`: %d\n", src, x$source_counts[[src]]))
+}
+```
+
+## Training pairs
+
+Use the filter row below the header to narrow by label, source, KM, or BM.
+
+```{r}
+#| label: pairs-table
+x$widget
+```

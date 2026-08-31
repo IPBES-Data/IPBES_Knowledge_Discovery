@@ -1042,6 +1042,91 @@ list(
     deployment = "main"
   ),
 
+  # Target 2h4d: NLI fine-tuning training data (TD_NLI_training.qmd) — reads
+  # only already-built output/llm_verification/scores* data (no new LLM/API
+  # calls). Single-active-granularity, same scope as llm_verification_parquet
+  # itself (not cross()'d over nli_granularities). Hive-partitioned
+  # granularity=<g>/nli_config=<cfg>/assessment=<id>/ — the SAME scheme
+  # output/nli_scores_evidence and friends already use, not Phase 2's own
+  # (llm_config/assessment/nli_route/km/bm); llm_config is carried through
+  # as a plain column instead, passed in explicitly as llm_verification_active
+  # rather than read back from llm_verification_parquet/
+  # llm_verification_keypaper_parquet's own data — those paths are already
+  # scoped INSIDE a `llm_config=<val>/` partition directory, so Arrow does
+  # not reconstruct that segment as a column when reading at that path
+  # level (confirmed directly: "Column `llm_config` doesn't exist"), same
+  # fix build_llm_verification_qa_data.R already uses for its own llm_active
+  # handling. See R/build_nli_training_data.R.
+  tar_target(
+    nli_training_data,
+    build_nli_training_data(
+      assessment,
+      llm_verification_parquet,
+      llm_verification_keypaper_parquet,
+      works_parquet,
+      works_citing_parquet,
+      nli_active,
+      llm_verification_active,
+      granularity,
+      "output/nli_training"
+    ),
+    pattern = map(
+      assessment, llm_verification_parquet, llm_verification_keypaper_parquet,
+      works_parquet, works_citing_parquet
+    ),
+    format = "file",
+    deployment = "main",
+    garbage_collection = TRUE
+  ),
+
+  # Target 2h4d' (QA data/report): sibling to llm_verification_qa_data/
+  # llm_verification_qa_report_html — same "not a scoring result, a sanity
+  # check" framing, same cached-widget convention. See
+  # R/build_nli_training_qa_data.R.
+  tar_target(
+    nli_training_qa_data,
+    build_nli_training_qa_data(
+      nli_training_data, assessment$id, nli_active, granularity, "output/tables"
+    ),
+    pattern = map(assessment, nli_training_data),
+    format = "file"
+  ),
+
+  tar_target(
+    nli_training_qa_report_qmd,
+    "input/reports/QA_NLI_Training_Data_Report.qmd",
+    format = "file"
+  ),
+
+  tar_target(
+    nli_training_qa_report_html,
+    {
+      # Referenced only to establish the DAG dependency — the qmd itself
+      # re-reads nli_training_qa_data's actual value via tar_read_raw() at
+      # render time, same convention as the other QA_*_Report targets.
+      nli_training_qa_report_qmd
+      x <- readRDS(nli_training_qa_data)
+      out <- paste0(
+        "QA_NLI_Training_Data_Report_", x$assessment, "_", x$nli_config, "_", x$granularity, ".html"
+      )
+      quarto::quarto_render(
+        "input/reports/QA_NLI_Training_Data_Report.qmd",
+        output_file = out, execute_dir = getwd(),
+        execute_params = list(
+          assessment_id = x$assessment, nli_config = x$nli_config, granularity = x$granularity
+        )
+      )
+      dir.create("output/reports", recursive = TRUE, showWarnings = FALSE)
+      file.rename(file.path("input/reports", out), file.path("output/reports", out))
+      file.path("output/reports", out)
+    },
+    pattern = map(nli_training_qa_data),
+    format = "file",
+    # Same concurrent-quarto_render() guard as every other QA_*_Report
+    # target — avoids two branches racing on the same source .qmd.
+    deployment = "main"
+  ),
+
   # Target 2h3: NLI overview figures — label split (overall/per-KM/per-BM),
   # confidence density, alignment density, per assessment.
   tar_target(
