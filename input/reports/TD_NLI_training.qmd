@@ -17,105 +17,181 @@ format:
 
 ## Overview
 
-**Status note:** written while `MoritzLaurer/deberta-v3-large-zeroshot-v2.0`
-was the active zero-shot model. It has since been retired in favour of
+**Status note (updated):** written while `MoritzLaurer/deberta-v3-large-zeroshot-v2.0`
+was the active zero-shot model; it has since been retired in favour of
 `MoritzLaurer/bge-m3-zeroshot-v2.0-c` (see `TD_BM_NLI_approach.qmd`'s
-"Status update" and the `nli:` comment in `input/config.yaml`) — this
-document's fine-tuning design was never executed against either model, and
-would need re-targeting to `bge-m3-zeroshot-v2.0-c` (a different base
-architecture) before being acted on. Kept as the original design record
-below, un-rewritten.
+"Status update" and the `nli:` comment in `input/config.yaml`). The
+fine-tuning procedure below has been retargeted to that model name, but the
+exact HuggingFace fine-tuning API for `bge-m3-zeroshot-v2.0-c`'s specific
+base architecture has **not** been verified against its model card — check
+that before running the script in [Fine-tuning Procedure](#fine-tuning-procedure).
 
-The zero-shot NLI model (`MoritzLaurer/deberta-v3-large-zeroshot-v2.0`) works well
-out of the box, but its training data does not include biodiversity/IPBES language. A
-domain-adapted fine-tuned version should produce fewer borderline classifications and
-better calibrated confidence scores.
+**More importantly, the Training Data Strategy below has been substantially
+revised** from the original design. The original recipe treated every paper
+cited under a BM as a free, clean `SUPPORTS` example (premise = its
+title+abstract, hypothesis = the BM text). Real data now contradicts that
+assumption directly: once Phase 2 (LLM verification,
+`TD_NLI_LLM_two_phase.qmd`) was extended to review **every** key/seed paper
+against its own BM's claim — not just the routed citing-works subset — and
+required a verbatim quote before confirming `SUPPORTS`, only **2.6%** of
+GA1's 4,783 key-paper pairs actually had explicit textual support in the
+title+abstract alone; the rest came back `NOT_ENOUGH_INFO`. A key paper
+genuinely *is* the evidence a BM was written from (per IPBES expert
+consensus and its own full text), but its **abstract** very often doesn't
+restate the specific claim explicitly enough to count as textual entailment
+evidence. Training on "abstract text → SUPPORTS" for the ~97% of pairs
+where the abstract doesn't actually say that would teach the model to
+reproduce topic-adjacency-as-entailment confusion — a real, independently
+confirmed failure mode of the current zero-shot model (see
+`TD_NLI_LLM_two_phase.qmd`'s discussion of the same GA1 corpus: NLI's own
+`SUPPORTS` calls agree with the LLM's grounded, quote-checked verdict only
+7% of the time, across NLI's *entire* confidence range, not just at the
+margins).
 
-The key insight is that **training data is already embedded in the existing pipeline**:
-every BM is backed by citations extracted via the LOD, and those citations are already
-fetched as `works_parquet`. These known-support pairs can seed the training set almost
-for free.
+**Revised key insight**: training data is still embedded in the existing
+pipeline almost for free, but the *reliable* source is Phase 2's
+LLM-verified output (`llm_verification_keypaper_parquet` and
+`llm_verification_parquet`), not a blind citation join. Phase 2 already
+enforces the one property fine-tuning data needs most — a real, verbatim,
+quotable textual anchor for every positive label — so its output can be
+used directly with no additional labeling effort, exactly as
+`TD_NLI_LLM_two_phase.qmd`'s own "Using LLM Output as Training Data"
+section already anticipated for the citing-works chain; the key-paper chain
+now extends that same idea to a cleaner, high-precision source.
 
 ---
 
 ## Training Data Strategy
 
-### Positive examples — SUPPORTS (essentially free)
+### Positive examples — LLM-verified SUPPORTS (small, high-precision)
 
-Each paper cited under a BM is, by IPBES expert consensus, a supporting reference for
-that BM. This maps directly onto the NLI `SUPPORTS` label.
-
-Source in the pipeline:
+**Not** every paper cited under a BM, unconditionally — see the Status
+note above for why that's now known to be unreliable as a training
+signal. Instead, use only the key papers Phase 2's full-coverage chain
+(`llm_verification_keypaper_parquet`, `R/build_llm_verification_keypaper_parquet.R`)
+actually confirmed as `SUPPORTS` with a real, verbatim quote from the
+abstract. This is a strict subset of "papers IPBES cites as evidence," but
+every example is genuinely grounded in text the premise actually contains,
+not just citation provenance — exactly the property fine-tuning data needs.
 
 ```r
-# Join works_parquet (which carries km/bm assignment) with key_messages_parquet
-# (which carries bm_description) to get (abstract, bm_text) pairs labelled SUPPORTS
 library(arrow)
 library(dplyr)
 
+# llm_label == "SUPPORTS" here always has sufficient_evidence == TRUE and a
+# verbatim quote (quote_is_verbatim() demotes anything else to
+# NOT_ENOUGH_INFO before this table is ever written) -- see
+# R/build_llm_verification_parquet.R.
+positives <- open_dataset("output/llm_verification/scores_keypaper") |>
+  filter(llm_label == "SUPPORTS") |>
+  select(assessment, km, bm, claim, work_id, quote) |>
+  collect()
+
+# premise here is the QUOTE itself, not the full abstract -- it's the
+# minimal text actually shown to have entailed the claim. Re-join the full
+# title+abstract from works_parquet instead if you'd rather fine-tune on
+# the full premise the pipeline actually scores at inference time (closer
+# to the real task, but reintroduces some of the "supporting sentence
+# buried in an otherwise off-topic abstract" noise the quote avoids --
+# worth comparing both empirically rather than assuming one is better).
+positives$hypothesis <- positives$claim
+positives$label <- "SUPPORTS"
+```
+
+Expected yield: **small** — ~124 for GA1 alone (2.6% of 4,783 key-paper
+pairs), growing as more assessments are loaded (IAS is currently disabled
+in `input/config.yaml`; re-enabling it and running its own
+`llm_verification_keypaper_parquet` would add its share). See
+[How Many Examples Are Needed](#how-many-examples-are-needed) below for
+what this means for the fine-tuning target.
+
+### Hard negatives — real NLI/LLM disagreements (preferred over synthetic)
+
+The strongest negative source is no longer synthetic — it's real. Every
+pair where NLI confidently called `SUPPORTS` (or `REFUTES`) but the
+LLM's grounded, quote-checked review said `NOT_ENOUGH_INFO` is a genuine,
+in-domain example of the exact failure this fine-tuning effort exists to
+correct: topical or citation-provenance adjacency mistaken for entailment.
+These come from *both* Phase 2 chains — the main citing-works corpus
+(`output/llm_verification/scores`) and the key-paper chain
+(`output/llm_verification/scores_keypaper`) — and, unlike the synthetic
+cross-BM construction below, need no manual spot-checking of label
+correctness, since the LLM's own verbatim-quote requirement already did
+that verification.
+
+```r
+real_negatives <- function(path) {
+  open_dataset(path) |>
+    filter(nli_label %in% c("SUPPORTS", "REFUTES"), !uncertain, llm_label == "NOT_ENOUGH_INFO") |>
+    select(assessment, km, bm, claim, work_id, nli_label, nli_confidence) |>
+    collect()
+}
+negatives <- bind_rows(
+  real_negatives("output/llm_verification/scores"),
+  real_negatives("output/llm_verification/scores_keypaper")
+)
+negatives$hypothesis <- negatives$claim
+negatives$label <- "NOT_ENOUGH_INFO"
+```
+
+Expected yield: large relative to the positives above — for GA1's citing-works
+chain alone this is ~177,000 rows (the same 93% of NLI's confident calls
+the LLM downgraded; see `TD_NLI_LLM_two_phase.qmd`'s discussion of this
+corpus). Downsample to roughly match the positive count for class balance
+(see below) rather than using all of it — a 93%-negative training set would
+just teach the model to always predict `NOT_ENOUGH_INFO`.
+
+**Fallback, if more negative volume is needed than the real-disagreement
+source provides** (unlikely, given the yield above, but kept as a documented
+option): the original synthetic cross-BM pairing still works as a
+supplementary source. Same caution as before — prefer cross-KM or
+cross-assessment pairs, and spot-check ~20 manually, since topically
+adjacent BMs within the same KM may genuinely overlap.
+
+```r
+# Supplementary only -- see caution above
+set.seed(42)
 works <- open_dataset("output/works") |>
   select(assessment, km, bm, title, abstract) |>
   collect()
-
 bms <- open_dataset("output/key_messages") |>
   select(assessment, km, bm, bm_description) |>
   collect()
-
-positives <- works |>
-  inner_join(bms, by = c("assessment", "km", "bm")) |>
+cited <- works |> inner_join(bms, by = c("assessment", "km", "bm")) |>
   filter(!is.na(abstract), nchar(abstract) > 50) |>
-  transmute(
-    premise    = paste(title, abstract, sep = ". "),
-    hypothesis = bm_description,
-    label      = "SUPPORTS"
-  )
-```
-
-Expected yield: several hundred to low thousands of pairs depending on how many
-assessments and BMs are loaded — likely enough for a meaningful fine-tuning run without
-any additional labeling effort.
-
-### Hard negatives — NOT_ENOUGH_INFO
-
-Cross-BM pairing: take a paper cited under BM `A1` and pair it with the description of
-a topically unrelated BM (e.g. from a different KM). The paper has no particular reason
-to support `A3`, so the label is `NOT_ENOUGH_INFO`.
-
-**Caution:** topically adjacent BMs within the same KM may genuinely overlap. Prefer
-cross-KM or cross-assessment negatives to avoid mislabelling. A conservative rule:
-only use cross-assessment negatives (pair a paper from assessment X with a BM from
-assessment Y on a different topic area).
-
-```r
-# Simple cross-assessment negative construction
-set.seed(42)
-negatives <- positives |>
+  transmute(premise = paste(title, abstract, sep = ". "), hypothesis = bm_description)
+synthetic_negatives <- cited |>
   group_by(hypothesis) |>
-  slice_sample(n = 5) |>           # up to 5 papers per BM
+  slice_sample(n = 5) |>
   ungroup() |>
   mutate(
-    # shuffle hypotheses across assessments; ensure no original pairing survives
-    hypothesis = sample(unique(positives$hypothesis), n(), replace = TRUE),
+    hypothesis = sample(unique(cited$hypothesis), n(), replace = TRUE),
     label      = "NOT_ENOUGH_INFO"
   ) |>
-  filter(paste(premise, hypothesis) %in%
-           paste(positives$premise, positives$hypothesis) == FALSE)
+  filter(paste(premise, hypothesis) %in% paste(cited$premise, cited$hypothesis) == FALSE)
 ```
 
 ### REFUTES examples — the hard class
 
 `REFUTES` is genuinely rare in this domain: papers do not typically directly contradict
-IPBES consensus statements. Three options in increasing effort:
+IPBES consensus statements. A small real, LLM-quote-verified source now exists too —
+`nli_label == "REFUTES" & llm_label == "REFUTES"` in the same `output/llm_verification/scores*`
+tables the positives/negatives above come from (105 rows for GA1's citing-works chain;
+smaller still for key papers, since key papers should essentially never genuinely
+contradict their own BM) — but it's too small on its own for a full class. Options,
+in increasing effort, to supplement it:
 
 | Option | Notes |
 |---|---|
+| Use the real `REFUTES`/`REFUTES` rows only | Cleanest signal available, but likely too few (~100s) for a full class on its own |
 | Omit `REFUTES` entirely | Collapse into `NOT_ENOUGH_INFO`; simplest, acceptable if downstream use only cares about SUPPORTS vs. not |
-| Synthetic negation | Negate the BM hypothesis text ("Biodiversity is *not* declining…") and use known-support abstracts as premises — artificial but gives the model the class signal |
+| Synthetic negation | Negate the BM hypothesis text ("Biodiversity is *not* declining…") and use known-support premises — artificial but gives the model the class signal; combine with the real rows above rather than replacing them |
 | Manual labeling | Ask a domain expert to identify a small set (~20–30) of papers that genuinely contradict a BM; gold standard but expensive |
 
-For a first fine-tuning pass, the recommended approach is **omit or use synthetic
-negation**, then revisit once you have validated model performance on SUPPORTS vs.
-NOT_ENOUGH_INFO.
+For a first fine-tuning pass, the recommended approach is to **use the real
+`REFUTES`/`REFUTES` rows as-is and otherwise omit or use synthetic
+negation** to round out the class, then revisit once you have validated
+model performance on SUPPORTS vs. NOT_ENOUGH_INFO.
 
 ---
 
@@ -133,8 +209,27 @@ domain. This requires far fewer examples than original training.
 | > 1000 | Strong adaptation; useful if you have multiple assessments |
 
 **Practical target:** aim for **300–500 SUPPORTS** and an equal number of
-NOT_ENOUGH_INFO negatives (balanced classes). If you have fewer positives, use all of
-them and oversample negatives.
+NOT_ENOUGH_INFO negatives (balanced classes). With the revised LLM-verified
+positive source, GA1 alone (~124) falls short of even the 100-300 band —
+this is the real tradeoff of switching from "free but noisy" to "small but
+correct." Options, not mutually exclusive:
+
+- **Combine assessments** before fine-tuning (re-enable IAS in
+  `input/config.yaml`, run its own `llm_verification_keypaper_parquet`, and
+  pool both) — the doc's own recommendation elsewhere
+  ([Single Combined Model vs. Assessment-Specific Models](#single-combined-model-vs-assessment-specific-models))
+  to train on all assessments together applies here too.
+- **Accept a smaller fine-tuning run** (< 100 examples per class) and
+  expect a marginal, high-variance result per the table above — still
+  worth trying as a first pass, since the alternative (the original
+  recipe's few-thousand noisy positives) risks teaching the model the
+  wrong thing rather than nothing.
+- **Augment cautiously** with the raw key-paper join (the original
+  recipe), but as a clearly lower-confidence, separately-weighted tier
+  rather than mixed in as equally-trustworthy `SUPPORTS` labels — e.g. a
+  `source` column (`llm_verified` vs. `citation_only`) carried through to
+  fine-tuning so the two tiers can be compared or weighted differently
+  rather than silently blended.
 
 Hold out 15–20% as a validation set before training.
 
@@ -142,10 +237,13 @@ Hold out 15–20% as a validation set before training.
 
 ## Do You Need Negatives?
 
-Yes, but not necessarily hand-labeled ones. The model needs to see both classes during
-fine-tuning or it will over-predict `SUPPORTS`. The cross-BM construction above
-produces plausible negatives at no cost. Validate a sample manually (spot-check ~20
-cross-BM pairs) to confirm they are genuinely `NOT_ENOUGH_INFO` before using them.
+Yes. The model needs to see both classes during fine-tuning or it will over-predict
+`SUPPORTS`. The real NLI/LLM disagreement source above already gives far more
+negatives than positives — downsample it to roughly match the positive count
+for class balance (see above) rather than needing the synthetic cross-BM
+construction to manufacture negatives from nothing, as the original design
+assumed. Spot-check a sample of whichever source you end up using (~20
+pairs) before training regardless, same as the original recommendation.
 
 ---
 
@@ -170,7 +268,14 @@ from transformers import (
 import pandas as pd
 import torch
 
-MODEL_ID = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0"
+# Retargeted to the currently active model (see Status note above) --
+# NOT verified against bge-m3-zeroshot-v2.0-c's own model card yet. This
+# base model may not load cleanly via a generic
+# AutoModelForSequenceClassification(ignore_mismatched_sizes=True) the way
+# deberta-v3-large-zeroshot-v2.0 did -- check the model card's own
+# fine-tuning guidance (or its base architecture, bge-m3) before assuming
+# this script runs unmodified.
+MODEL_ID = "MoritzLaurer/bge-m3-zeroshot-v2.0-c"
 LABEL2ID  = {"SUPPORTS": 0, "REFUTES": 1, "NOT_ENOUGH_INFO": 2}
 ID2LABEL  = {v: k for k, v in LABEL2ID.items()}
 
@@ -266,7 +371,7 @@ in the Docker container ([external/runpod/docker/nli-runpod/](external/runpod/do
 ```dockerfile
 # In external/runpod/docker/nli-runpod/Dockerfile (or equivalent entrypoint)
 # Replace:
-MODEL_ID = "MoritzLaurer/deberta-v3-large-zeroshot-v2.0"
+MODEL_ID = "MoritzLaurer/bge-m3-zeroshot-v2.0-c"
 # With:
 MODEL_ID = "/app/nli-ipbes-finetuned/best"   # local path inside container
 ```
@@ -316,17 +421,23 @@ per-assessment subset for evaluation or top-up training without regenerating the
 
 ## Recommended Steps
 
-1. **Extract positives** from `works_parquet` × `key_messages_parquet` join (R script
-   above); export as `training_pairs.csv`
-2. **Construct negatives** using cross-assessment BM pairing; spot-check 20 pairs
-   manually
+1. **Extract positives** from `output/llm_verification/scores_keypaper` filtered to
+   `llm_label == "SUPPORTS"` (R script above); export as `training_pairs.csv`
+2. **Extract negatives** from the real NLI/LLM disagreement rows in
+   `output/llm_verification/scores` and `output/llm_verification/scores_keypaper`
+   (both chains); downsample to roughly match the positive count. Fall back to the
+   synthetic cross-assessment BM pairing only if more volume is needed; spot-check
+   20 pairs manually either way
 3. **Check class balance** — target roughly 50/50 SUPPORTS / NOT_ENOUGH_INFO; add
-   synthetic `REFUTES` negations if that class is wanted
-4. **Fine-tune** on RunPod L4 using the script above (~15 min)
+   the real `REFUTES`/`REFUTES` rows (plus synthetic negations if still short) for
+   that class
+4. **Fine-tune** on RunPod L4 using the script above (~15 min) — confirm
+   `bge-m3-zeroshot-v2.0-c`'s fine-tuning API first (see the script's own caveat)
 5. **Evaluate** on held-out set; compare F1 on SUPPORTS against zero-shot baseline
 6. **Spot-check** on a sample from `works_citing_parquet`
 7. **Redeploy** Docker container with updated model path
-8. **Invalidate** `nli_scores_parquet` target and re-run pipeline
+8. **Invalidate** `nli_scores_by_claim_evidence` (and/or `nli_scores_keypaper_evidence`)
+   and re-run the pipeline
 
 ---
 
@@ -334,8 +445,14 @@ per-assessment subset for evaluation or top-up training without regenerating the
 
 - [TD_BM_NLI_approach.qmd](TD_BM_NLI_approach.html) — zero-shot pipeline design and
   compute estimates
-- [R/build_nli_scores_parquet.R](R/build_nli_scores_parquet.R) — current inference
-  implementation
+- [TD_NLI_LLM_two_phase.qmd](TD_NLI_LLM_two_phase.html) — Phase 2 (LLM verification)
+  design; its "Using LLM Output as Training Data" section is what this document's
+  revised strategy builds on, and its GA1 corpus is the source of the 7%-agreement
+  finding motivating the revision above
+- [R/score_one_claim.R](R/score_one_claim.R) — current NLI inference implementation
+- [R/build_llm_verification_parquet.R](R/build_llm_verification_parquet.R),
+  [R/build_llm_verification_keypaper_parquet.R](R/build_llm_verification_keypaper_parquet.R) —
+  Phase 2 implementations that produce this document's training-data sources
 - [external/runpod/docker/nli-runpod/](external/runpod/docker/nli-runpod/) — inference server Docker setup
 - SciFact dataset: https://github.com/allenai/scifact
 - HuggingFace fine-tuning docs: https://huggingface.co/docs/transformers/training
