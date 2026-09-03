@@ -82,11 +82,15 @@ cat("- By source:\n")
 for (src in names(x$source_counts)) {
   cat(sprintf("  - `%s`: %d\n", src, x$source_counts[[src]]))
 }
+cat("- Key paper vs. citing-work premise:\n")
+for (kp in names(x$keypaper_counts)) {
+  cat(sprintf("  - `keypaper=%s`: %d\n", kp, x$keypaper_counts[[kp]]))
+}
 ```
 
 ## Training pairs
 
-Use the filter row below the header to narrow by label, source, KM, or BM.
+Use the filter row below the header to narrow by label, source, key-paper origin, KM, or BM.
 
 ```{r}
 #| label: pairs-table

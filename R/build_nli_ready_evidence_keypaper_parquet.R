@@ -25,10 +25,16 @@
 # `snowball_path` is the raw snowball_parquet target value (a 3-element
 # vector: nodes/edges/keypaper assessment dirs) -- the keypaper dir is
 # extracted internally, same convention build_works_citing_parquet() uses
-# for its own `nodes` extraction from that same vector.
+# for its own `nodes` extraction from that same vector. Since
+# snowball_parquet now runs one unified pro_snowball() call per assessment,
+# the keypaper table itself carries no km/bm attribution any more --
+# `works_path` (works_parquet) supplies the (km, bm, id) seed mapping used
+# to split it back apart per (km, bm) below, the same join
+# build_works_citing_parquet() uses for its own edges/nodes attribution.
 build_nli_ready_evidence_keypaper_parquet <- function(
   assessment,
   key_messages_parquet,
+  works_path,
   snowball_path,
   workers = 1L,
   output_root = "output/nli_ready_evidence_keypaper",
@@ -134,25 +140,32 @@ build_nli_ready_evidence_keypaper_parquet <- function(
     }))
   }))
 
-  # ── 2. Process keypaper partitions in parallel -- same per-file read
-  # (not open_dataset()) as build_nli_ready_evidence_parquet(), since each
-  # km/bm's keypaper batch can carry its own inferred schema. ─────────────
+  # ── 2. Process each (km, bm) group in parallel, filtering the one
+  # unified keypaper table down to that group's own seed ids. ─────────────
   if (file.exists(output_path)) {
     unlink(output_path, recursive = TRUE, force = TRUE)
   }
 
   scalar_cols <- c("id", "doi", "title", "abstract", "publication_year")
 
-  km_dirs <- list.dirs(keypaper_path, recursive = FALSE)
-  bm_pairs <- do.call(c, lapply(km_dirs, function(km_dir) {
-    lapply(list.dirs(km_dir, recursive = FALSE), function(bm_dir) {
-      list(km_dir = km_dir, bm_dir = bm_dir)
-    })
-  }))
+  # snowball_parquet's keypaper table is now unified (one row per unique
+  # seed across the whole assessment, no km/bm split) -- read it once and
+  # re-split per (km, bm) via works_parquet's own seed mapping, instead of
+  # walking km=/bm= directories that no longer exist.
+  seeds <- arrow::open_dataset(works_path) |>
+    dplyr::select(km, bm, id) |>
+    dplyr::collect() |>
+    dplyr::distinct()
+
+  keypapers_all <- arrow::open_dataset(keypaper_path) |>
+    dplyr::select(dplyr::any_of(scalar_cols)) |>
+    dplyr::collect()
+
+  bm_pairs <- split(seeds, paste(seeds$km, seeds$bm, sep = "\r"))
 
   results <- parallel::mclapply(bm_pairs, function(pair) {
-    km_val <- sub("^km=", "", basename(pair$km_dir))
-    bm_val <- sub("^bm=", "", basename(pair$bm_dir))
+    km_val <- pair$km[[1L]]
+    bm_val <- pair$bm[[1L]]
 
     sents_bm <- claims[claims$km == km_val & claims$bm == bm_val, , drop = FALSE]
     if (!nrow(sents_bm)) {
@@ -163,15 +176,7 @@ build_nli_ready_evidence_keypaper_parquet <- function(
       return(FALSE)
     }
 
-    files <- list.files(pair$bm_dir, pattern = "\\.parquet$", full.names = TRUE)
-    if (!length(files)) {
-      return(FALSE)
-    }
-
-    works <- dplyr::bind_rows(lapply(files, function(f) {
-      arrow::read_parquet(f) |>
-        dplyr::select(dplyr::any_of(scalar_cols))
-    }))
+    works <- keypapers_all |> dplyr::filter(id %in% pair$id)
     if (!nrow(works)) {
       return(FALSE)
     }

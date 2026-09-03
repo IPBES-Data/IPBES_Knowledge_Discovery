@@ -18,23 +18,48 @@
 # review said NOT_ENOUGH_INFO. Downsampled to roughly match the positive
 # count for class balance.
 #
-# REFUTES: the real nli_label=="REFUTES" & llm_label=="REFUTES" rows from
-# both chains, included unconditionally (too few to need downsampling).
+# REFUTES: the real llm_label=="REFUTES" rows from both chains, included
+# unconditionally (too few to need downsampling) -- filtered on the LLM's
+# own call alone, NOT requiring nli_label=="REFUTES" too (see real_refutes()
+# below for why: requiring NLI agreement here would exclude exactly the
+# "NLI was wrong, LLM corrected it" cases fine-tuning most needs, the same
+# reasoning already applied to how negatives are sourced above).
 #
-# Output is hive-partitioned granularity=<g>/nli_config=<cfg>/assessment=<id>/,
-# the SAME scheme output/nli_scores_evidence and friends already use --
-# `llm_config` is carried through as a plain COLUMN, not a fourth partition
-# level, matching Phase 1's own partition granularity rather than Phase 2's
-# more granular one (llm_config/assessment/nli_route/km/bm): this is a
-# deliberate simplification, since llm_verification_path/
+# Output is hive-partitioned granularity=<g>/nli_config=<cfg>/assessment=<id>/
+# keypaper=<TRUE|FALSE>/ -- one level deeper than output/nli_scores_evidence
+# and friends, which stop at assessment=<id>/. `llm_config` is still carried
+# as a plain COLUMN rather than a partition level (matching Phase 1's own
+# partition granularity rather than Phase 2's more granular one --
+# llm_config/assessment/nli_route/km/bm -- since llm_verification_path/
 # llm_verification_keypaper_path are already scoped to ONE (currently
-# active) llm_config by construction (that's how llm_verification_parquet's
-# own output_path is built) -- re-running under a DIFFERENT llm_config will
-# overwrite this partition's training data rather than keep both side by
-# side, same as switching nli.active would for a given granularity/assessment
-# slot in Phase 1's own output.
+# active) llm_config by construction; re-running under a DIFFERENT
+# llm_config will overwrite this partition's training data rather than keep
+# both side by side, same as switching nli.active would for a given
+# granularity/assessment slot in Phase 1's own output). `keypaper`, by
+# contrast, IS a real partition level: it distinguishes rows whose premise
+# is a key/seed paper (the literal evidence a BM was written from) from rows
+# whose premise is an arbitrary citing work one step removed from that
+# evidence -- the two are verified to the same quality bar (both go through
+# the same LLM judge + verbatim-quote check) but are NOT the same reliability
+# tier, since a citing work's SUPPORTS/REFUTES call has more room to be
+# topically-adjacent rather than genuinely on-point. Partitioning (not just a
+# plain column) makes it a fast, pruned filter for train_nli.py's own
+# FILTERS mechanism (e.g. FILTERS = {"keypaper": True} to train on the
+# smaller, more reliable tier alone) and for an assessment that currently
+# only has keypaper data (see the llm_verification_path parameter note
+# below) -- such an assessment naturally only ever produces a keypaper=TRUE/
+# subdirectory, with no keypaper=FALSE/ one to be missing.
 build_nli_training_data <- function(
   assessment,
+  # NOT a targets-tracked dependency -- _targets.R computes this path (it
+  # mirrors build_llm_verification_parquet()'s own output_path formula)
+  # rather than passing the llm_verification_parquet target value directly,
+  # specifically so an assessment can contribute keypaper-only rows without
+  # forcing targets to build its entire citing-works Phase 1+2 chain just to
+  # satisfy this target's dependency graph. May legitimately not exist yet
+  # (e.g. an assessment whose keypaper chain is done but citing-works chain
+  # isn't) -- has_data() below treats that identically to a real, empty
+  # result, same as it already does for "nothing routed yet."
   llm_verification_path,
   llm_verification_keypaper_path,
   works_path,
@@ -121,7 +146,7 @@ build_nli_training_data <- function(
   positives <- positives |>
     dplyr::left_join(work_lookup(works_path, unique(positives$work_id)), by = "work_id") |>
     dplyr::mutate(
-      assessment = assessment_id, llm_config = llm_active,
+      assessment = assessment_id, llm_config = llm_active, keypaper = TRUE,
       hypothesis = claim, label = "SUPPORTS", source = "llm_verified"
     )
 
@@ -136,8 +161,8 @@ build_nli_training_data <- function(
   }
 
   negatives_raw <- dplyr::bind_rows(
-    real_negatives(llm_verification_path)         |> dplyr::mutate(.works_path = works_citing_path),
-    real_negatives(llm_verification_keypaper_path) |> dplyr::mutate(.works_path = works_path)
+    real_negatives(llm_verification_path)         |> dplyr::mutate(.works_path = works_citing_path, keypaper = FALSE),
+    real_negatives(llm_verification_keypaper_path) |> dplyr::mutate(.works_path = works_path, keypaper = TRUE)
   )
 
   set.seed(42)
@@ -161,20 +186,42 @@ build_nli_training_data <- function(
       hypothesis = claim, label = "NOT_ENOUGH_INFO", source = "llm_verified"
     )
 
-  # --- REFUTES: real nli_label == llm_label == "REFUTES", both chains -------
+  # --- REFUTES: real llm_label == "REFUTES", both chains --------------------
 
-  real_refutes <- function(path, wp) {
-    if (!has_data(path)) return(dplyr::mutate(empty_pairs(), title = character(), abstract = character(), doi = character()))
+  # Filters on llm_label alone -- NOT nli_label == "REFUTES" too (an earlier
+  # version required both to agree). That agreement requirement introduced a
+  # real selection bias for training purposes specifically: it only ever
+  # kept REFUTES examples the original zero-shot NLI already got right,
+  # systematically excluding the "NLI called this SUPPORTS-certain, but the
+  # LLM's grounded review correctly caught it as REFUTES" cases -- exactly
+  # the corrective signal fine-tuning exists to provide, and the same kind
+  # of case real_negatives() above already deliberately targets (NLI
+  # confident, LLM disagreed). llm_label alone is still quote-grounded --
+  # every llm_label passed build_llm_verification_parquet.R's own
+  # quote_is_verbatim() check, which is the real anti-hallucination
+  # safeguard here, not the NLI cross-check. nli_label/nli_confidence are
+  # still selected and carried through (informative -- lets the QA report
+  # or a later analysis distinguish "NLI already agreed" from "NLI
+  # corrected" rows), just no longer used as a filter.
+  real_refutes <- function(path, wp, is_keypaper) {
+    if (!has_data(path)) {
+      return(dplyr::mutate(
+        empty_pairs(), title = character(), abstract = character(), doi = character(),
+        keypaper = logical()
+      ))
+    }
     d <- arrow::open_dataset(path) |>
-      dplyr::filter(nli_label == "REFUTES", llm_label == "REFUTES") |>
+      dplyr::filter(llm_label == "REFUTES") |>
       dplyr::select(km, bm, claim, work_id, quote, nli_config, nli_label, nli_confidence) |>
       dplyr::collect()
-    d |> dplyr::left_join(work_lookup(wp, unique(d$work_id)), by = "work_id")
+    d |>
+      dplyr::left_join(work_lookup(wp, unique(d$work_id)), by = "work_id") |>
+      dplyr::mutate(keypaper = is_keypaper)
   }
 
   refutes <- dplyr::bind_rows(
-    real_refutes(llm_verification_path, works_citing_path),
-    real_refutes(llm_verification_keypaper_path, works_path)
+    real_refutes(llm_verification_path, works_citing_path, FALSE),
+    real_refutes(llm_verification_keypaper_path, works_path, TRUE)
   ) |>
     dplyr::mutate(
       assessment = assessment_id, llm_config = llm_active,
@@ -182,8 +229,9 @@ build_nli_training_data <- function(
     )
 
   cols <- c(
+    "id",
     "assessment", "km", "bm", "work_id", "hypothesis", "quote", "title", "abstract", "doi",
-    "label", "source", "llm_config", "nli_config", "nli_label", "nli_confidence"
+    "label", "source", "llm_config", "nli_config", "nli_label", "nli_confidence", "keypaper"
   )
   training_pairs <- dplyr::bind_rows(positives, negatives, refutes)
 
@@ -194,6 +242,26 @@ build_nli_training_data <- function(
     return(output_path)
   }
 
+  # Stable row id for a future label-correction UI: a content hash (not a
+  # sequential integer) over the row's natural key, so the same logical row
+  # gets the same id across re-runs regardless of row order -- a sequential
+  # id would silently shift whenever bind_rows()/downsampling order changes
+  # even slightly, which is exactly the retrofit pain this column exists to
+  # avoid. hypothesis is part of the key because one (km, bm, work_id) triple
+  # can legitimately recur with different claim text (different granularity
+  # segmentation, or a re-completed atomic_bm fragment).
+  training_pairs$id <- vapply(
+    seq_len(nrow(training_pairs)),
+    function(i) digest::digest(
+      paste(
+        training_pairs$assessment[[i]], training_pairs$km[[i]], training_pairs$bm[[i]],
+        training_pairs$work_id[[i]], training_pairs$hypothesis[[i]], sep = ""
+      ),
+      algo = "xxhash32"
+    ),
+    character(1)
+  )
+
   training_pairs <- training_pairs |> dplyr::select(dplyr::all_of(cols))
   training_pairs$granularity <- granularity
 
@@ -202,7 +270,12 @@ build_nli_training_data <- function(
     dataset = training_pairs,
     path = output_root,
     format = "parquet",
-    partitioning = c("granularity", "nli_config", "assessment"),
+    # keypaper=<TRUE|FALSE> nests under assessment=<id>/ -- a single call
+    # can (and typically does) produce both values, so this deliberately
+    # writes two sibling subdirectories under output_path rather than one;
+    # output_path (returned below) stays the assessment=<id>/ parent, which
+    # correctly covers both.
+    partitioning = c("granularity", "nli_config", "assessment", "keypaper"),
     existing_data_behavior = "delete_matching"
   )
 

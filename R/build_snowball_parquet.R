@@ -33,68 +33,89 @@ build_snowball_parquet <- function(
     dplyr::collect() |>
     dplyr::mutate(w_id = sub("^https://openalex\\.org/", "", id))
 
-  km_bm_groups <- dplyr::distinct(works, km, bm)
+  # One snowball run per assessment over the UNION of every key paper
+  # across all its km/bm groups -- a single work can legitimately be a
+  # seed for several BMs (see R/download_works.R's many-to-many join), so
+  # calling pro_snowball() once per (km, bm) as before re-fetched the same
+  # seed's citation graph redundantly, up to ~19-29x for some assessments.
+  # Per-(km, bm) attribution is now derived downstream by joining the
+  # unified edges/nodes tables against works_parquet's own (km, bm, id)
+  # mapping -- see R/build_works_citing_parquet.R and
+  # R/build_nli_ready_evidence_keypaper_parquet.R.
+  ids <- unique(works$w_id)
 
-  for (i in seq_len(nrow(km_bm_groups))) {
-    km_val <- km_bm_groups$km[[i]]
-    bm_val <- km_bm_groups$bm[[i]]
-    ids <- unique(works$w_id[works$km == km_val & works$bm == bm_val])
-    if (!length(ids)) {
-      next
+  if (length(ids)) {
+    message("Snowball [", assessment_id, "]: ", length(ids), " unique seeds")
+
+    # openalexSnowball (confirmed on the installed 0.1.2) has a real
+    # internal bug: when a seed set's snowball search finds ZERO
+    # keypapers, its own code tries to read back an internal
+    # "keypaper_parquet" temp directory via a glob pattern that matches
+    # nothing, and duckdb/arrow raises an IO error instead of it just
+    # returning an empty result -- reproduced twice on real assessment
+    # data (VA and TCA), not a one-off. Narrowly catches ONLY this exact
+    # error signature and treats it as "zero keypapers" (same as the
+    # ids-empty case above) -- any OTHER pro_snowball() failure still
+    # propagates and fails the pipeline loudly, since this is one
+    # specific, understood package bug, not a blanket "ignore snowball
+    # errors" escape hatch.
+    sb_dir <- tryCatch(
+      openalexSnowball::pro_snowball(
+        identifier = ids,
+        output = tempfile(fileext = ".snowball"),
+        verbose = TRUE
+      ),
+      error = function(e) {
+        msg <- conditionMessage(e)
+        if (grepl("keypaper_parquet", msg, fixed = TRUE)) {
+          warning(sprintf(
+            "[snowball %s] openalexSnowball found no keypapers for this seed set (package-internal read error on empty result, treated as zero): %s",
+            assessment_id, msg
+          ), call. = FALSE)
+          NULL
+        } else {
+          stop(e)
+        }
+      }
+    )
+
+    if (!is.null(sb_dir)) {
+      # Stay in Arrow end-to-end: OpenAlex `nodes` carries list/struct
+      # columns (authorships, topics, locations, mesh, ...) that don't
+      # round-trip through an R data.frame — `collect() |> write_dataset()`
+      # fails with "Degenerated data frame". `mutate()` on a Dataset is
+      # lazy and works fine.
+      nodes_ds <- arrow::open_dataset(file.path(sb_dir, "nodes")) |>
+        dplyr::mutate(assessment = assessment_id)
+
+      edges_ds <- arrow::open_dataset(file.path(sb_dir, "edges")) |>
+        dplyr::mutate(assessment = assessment_id)
+
+      # openalexSnowball >= 0.1.1 no longer emits a standalone keypaper
+      # directory; keypapers are inside `nodes` with relation = "keypaper".
+      keypaper_ds <- nodes_ds |> dplyr::filter(relation == "keypaper")
+
+      arrow::write_dataset(
+        nodes_ds,
+        nodes_root,
+        partitioning = c("assessment", "relation"),
+        existing_data_behavior = "delete_matching"
+      )
+      arrow::write_dataset(
+        edges_ds,
+        edges_root,
+        partitioning = c("assessment", "edge_type"),
+        existing_data_behavior = "delete_matching"
+      )
+      arrow::write_dataset(
+        keypaper_ds,
+        keypaper_root,
+        partitioning = c("assessment"),
+        existing_data_behavior = "delete_matching"
+      )
+
+      unlink(sb_dir, recursive = TRUE, force = TRUE)
     }
-
-    message(
-      "Snowball [",
-      assessment_id,
-      " / ",
-      km_val,
-      " / ",
-      bm_val,
-      "]: ",
-      length(ids),
-      " seeds"
-    )
-
-    sb_dir <- openalexSnowball::pro_snowball(
-      identifier = ids,
-      output = tempfile(fileext = ".snowball"),
-      verbose = TRUE
-    )
-
-    # Stay in Arrow end-to-end: OpenAlex `nodes` carries list/struct columns
-    # (authorships, topics, locations, mesh, ...) that don't round-trip through
-    # an R data.frame — `collect() |> write_dataset()` fails with "Degenerated
-    # data frame". `mutate()` on a Dataset is lazy and works fine.
-    nodes_ds <- arrow::open_dataset(file.path(sb_dir, "nodes")) |>
-      dplyr::mutate(assessment = assessment_id, km = km_val, bm = bm_val)
-
-    edges_ds <- arrow::open_dataset(file.path(sb_dir, "edges")) |>
-      dplyr::mutate(assessment = assessment_id, km = km_val, bm = bm_val)
-
-    # openalexSnowball >= 0.1.1 no longer emits a standalone keypaper directory;
-    # keypapers are inside `nodes` with relation = "keypaper".
-    keypaper_ds <- nodes_ds |> dplyr::filter(relation == "keypaper")
-
-    arrow::write_dataset(
-      nodes_ds,
-      nodes_root,
-      partitioning = c("assessment", "km", "bm", "relation"),
-      existing_data_behavior = "delete_matching"
-    )
-    arrow::write_dataset(
-      edges_ds,
-      edges_root,
-      partitioning = c("assessment", "km", "bm", "edge_type"),
-      existing_data_behavior = "delete_matching"
-    )
-    arrow::write_dataset(
-      keypaper_ds,
-      keypaper_root,
-      partitioning = c("assessment", "km", "bm"),
-      existing_data_behavior = "delete_matching"
-    )
-
-    unlink(sb_dir, recursive = TRUE, force = TRUE)
   }
 
   c(nodes_assessment_dir, edges_assessment_dir, keypaper_assessment_dir)

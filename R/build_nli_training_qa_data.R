@@ -64,6 +64,10 @@ build_nli_training_qa_data <- function(
   # build_nli_training_data.R hit for `llm_config`. Added back via
   # mutate(assessment = assessment_id) using the parameter already passed
   # in, rather than read from the data.
+  # keypaper is a hive-partition segment (keypaper=true/keypaper=false), so
+  # Arrow reconstructs it as the literal partition-directory STRING "true"/
+  # "false", not a real logical -- confirmed directly (as.logical() handles
+  # both cases/spellings fine, so this is a one-line fix, not a workaround).
   disp <- d |>
     dplyr::mutate(
       assessment = assessment_id,
@@ -71,11 +75,12 @@ build_nli_training_qa_data <- function(
       bm = factor(bm),
       label = factor(label),
       source = factor(source),
+      keypaper = factor(as.logical(keypaper)),
       work = mapply(work_link, work_id, doi),
       nli_confidence = round(nli_confidence, 3)
     ) |>
     dplyr::select(
-      assessment, km, bm, label, source, hypothesis, quote, work, title, abstract,
+      assessment, km, bm, label, source, keypaper, hypothesis, quote, work, title, abstract,
       llm_config, nli_label, nli_confidence
     )
 
@@ -100,6 +105,7 @@ build_nli_training_qa_data <- function(
 
   label_counts <- d |> dplyr::count(label) |> tibble::deframe()
   source_counts <- d |> dplyr::count(source) |> tibble::deframe()
+  keypaper_counts <- d |> dplyr::mutate(keypaper = as.logical(keypaper)) |> dplyr::count(keypaper) |> tibble::deframe()
 
   saveRDS(
     list(
@@ -110,6 +116,7 @@ build_nli_training_qa_data <- function(
       n_total = nrow(d),
       label_counts = label_counts,
       source_counts = source_counts,
+      keypaper_counts = keypaper_counts,
       widget = widget
     ),
     file = fn

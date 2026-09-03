@@ -1,0 +1,136 @@
+---
+title: QA NLI Fine-Tuned Model Report
+subtitle: QA check for a locally fine-tuned NLI classifier (scripts/training/train_nli.py)
+date: today
+params:
+  nli_config: "bge_m3_zeroshot_atomic_bm"
+format:
+    html:
+        toc: true
+        toc-depth: 4
+        embed-resources: true
+        code-fold: true
+        code-summary: 'Show the code'
+        keep-md: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(DT)
+library(ggplot2)
+
+# No source()ing of R/build_nli_finetuned_model_qa_data.R here --
+# quarto::quarto_render() runs this file in its own fresh session that
+# never sources R/*.R (same reasoning every other QA_*_Report.qmd in this
+# project already documents). Everything displayable was already built and
+# cached by build_nli_finetuned_model_qa_data() -- this qmd just reads it
+# back and lays it out.
+expected_name <- function(ext) {
+  sprintf("nli_finetuned_model_qa_%s.%s", params$nli_config, ext)
+}
+
+data_path <- targets::tar_read_raw("nli_finetuned_model_qa_data") |>
+  (\(x) x[basename(x) == expected_name("rds")])()
+x <- readRDS(data_path)
+```
+
+# nli_config: `r params$nli_config`
+
+## Methodology
+
+This report is a **QA check on a locally fine-tuned NLI classifier
+(`scripts/training/train_nli.py`), not a scoring result in its own right**
+— it lets a training run's real composition, class balance, and held-out
+performance be spot-checked before deciding whether the resulting model is
+worth deploying. See `TD_NLI_training.qmd` for the full training-data
+strategy and fine-tuning design this implements.
+
+Only produced when the active nli config has `train: true` set in
+`input/config.yaml` — otherwise `nli_finetuned_model` writes an empty
+marker and this report shows the empty state below rather than a real
+result.
+
+```{r}
+#| label: empty-check
+#| results: asis
+if (isTRUE(x$empty)) {
+  cat(sprintf(
+    "No fine-tuned model for `nli_config: %s` — either `train: false` in input/config.yaml (the default), or a run that failed before completing. Set `train: true` for this config and re-run `tar_make(names = \"nli_finetuned_model\")` to produce one.\n\n",
+    params$nli_config
+  ))
+  knitr::knit_exit()
+}
+```
+
+```{r}
+#| label: summary
+#| results: asis
+cat(sprintf("- **Run**: `%s` (%s)\n", x$run_id, x$timestamp))
+cat(sprintf("- **Base model**: `%s`\n", x$model_id))
+cat(sprintf("- **Premise mode**: `%s`\n", x$premise_mode))
+cat(sprintf(
+  "- **Assessments**: %s — **Granularity**: %s\n",
+  paste(x$assessments, collapse = ", "), paste(x$granularity, collapse = ", ")
+))
+cat(sprintf(
+  "- **%d** total rows (**%d** train / **%d** held-out eval)\n",
+  x$n_rows_total, x$n_rows_train, x$n_rows_eval
+))
+cat("- Class balance:\n")
+for (lab in names(x$label_counts)) {
+  cat(sprintf("  - `%s`: %d\n", lab, x$label_counts[[lab]]))
+}
+cat("- Key paper vs. citing-work premise:\n")
+for (kp in names(x$keypaper_counts)) {
+  cat(sprintf("  - `keypaper=%s`: %d\n", kp, x$keypaper_counts[[kp]]))
+}
+cat(sprintf(
+  "- **Held-out accuracy: %.1f%%** (best checkpoint: `%s`, eval_loss = %.4f)\n",
+  100 * x$accuracy, basename(x$best_model_checkpoint), x$best_metric
+))
+```
+
+## Held-out classification report
+
+Computed on the `r x$n_rows_eval` rows this run never trained on. `support`
+is the number of true examples of that class in the held-out split — with
+this few rows, treat individual precision/recall values as indicative, not
+precise.
+
+```{r}
+#| label: classification-table
+DT::datatable(
+  x$classification_df, rownames = FALSE, options = list(dom = "t", paging = FALSE)
+)
+```
+
+## Training curve
+
+Eval loss at the end of each epoch — should trend down across epochs if
+the model is genuinely learning (a flat line at `log(3) ≈ 1.099` — the
+loss of a classifier guessing uniformly across 3 classes — is the signature
+of a training run that never actually moved away from its random head
+initialization).
+
+```{r}
+#| label: loss-curve
+if (!is.null(x$loss_plot)) {
+  x$loss_plot
+} else {
+  cat("No eval_loss entries in the training log.")
+}
+```
+
+Full per-step log (loss, grad_norm, learning_rate where logged; eval_loss
+at each epoch boundary):
+
+```{r}
+#| label: log-table
+DT::datatable(
+  x$log_df, rownames = FALSE,
+  options = list(dom = "t", paging = FALSE, scrollX = TRUE)
+)
+```

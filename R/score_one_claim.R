@@ -100,6 +100,15 @@ score_one_claim <- function(
   batch_size          <- as.integer(nli_cfg_get(cfg, "batch_size", 32L))
   http_chunk          <- as.integer(nli_cfg_get(cfg, "http_chunk", 256L))
   multi_label         <- isTRUE(nli_cfg_get(cfg, "multi_label", FALSE))
+  # passes: 3 (default) = zero-shot, one forward pass per reformulated
+  # candidate label, cross-normalized server-side (the only scheme this
+  # project used before fine-tuning entered the picture). passes: 1 = a
+  # directly fine-tuned classifier -- one forward pass on (premise, raw
+  # claim text), server reads its native N-way softmax directly. Either way
+  # the response is keyed by the same candidate_labels strings, so nothing
+  # below this point (pick()/p_supports/p_refutes/p_nei/output schema) needs
+  # to know which mode produced it.
+  passes              <- as.integer(nli_cfg_get(cfg, "passes", 3L))
   uncertain_threshold <- as.numeric(nli_cfg_get(cfg, "uncertain_threshold", 0.60))
   max_length          <- nli_cfg_get(cfg, "max_length", NULL)
   if (!is.null(max_length)) max_length <- as.integer(max_length)
@@ -112,8 +121,19 @@ score_one_claim <- function(
 
   hosts <- nli_hosts(cfg)
 
-  claim_safe <- gsub("\\{", "{{", gsub("\\}", "}}", claim_unit$claim))
-  hyp_tmpl <- sprintf(template_fmt, claim_safe)
+  if (passes == 1L) {
+    # Direct mode: the raw claim text is sent to the server as a literal
+    # hypothesis (server.py applies no .format() to it), so it must NOT be
+    # brace-escaped the way the zero-shot template path needs (that escaping
+    # exists only to protect literal "{5.4.1}"-style braces in the claim
+    # from Python's per-label .format() call, which doesn't happen here).
+    hyp_tmpl   <- NULL
+    hypothesis <- claim_unit$claim
+  } else {
+    claim_safe <- gsub("\\{", "{{", gsub("\\}", "}}", claim_unit$claim))
+    hyp_tmpl   <- sprintf(template_fmt, claim_safe)
+    hypothesis <- NULL
+  }
 
   # Acquire whichever host is free first (non-blocking try-each-host loop).
   # Scan the hosts in a RANDOM order each attempt rather than always starting
@@ -163,8 +183,10 @@ score_one_claim <- function(
         sequences           = premises[idx],
         candidate_labels    = candidate_labels,
         hypothesis_template = hyp_tmpl,
+        hypothesis          = hypothesis,
         multi_label         = multi_label,
         batch_size          = batch_size,
+        passes              = passes,
         max_length          = max_length,
         auth_token          = auth_token
       ),

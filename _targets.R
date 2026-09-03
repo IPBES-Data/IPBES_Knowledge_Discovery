@@ -152,6 +152,27 @@ list(
     max_length,
     yaml::read_yaml(config_file)[["nli"]][["configs"]][[nli_active]][["max_length"]]
   ),
+  # Same reasoning again: whether to fine-tune the active config's model
+  # (scripts/training/train_nli.py, via nli_finetuned_model below) is its
+  # own field, read directly rather than through the full nli_config blob,
+  # so an unrelated field edit (host list, uncertain_threshold, ...) never
+  # spuriously re-triggers a real ~25min local training run. Defaults to
+  # FALSE -- every existing config leaves train: false explicitly in
+  # input/config.yaml, but %||% covers a config that omits the field entirely.
+  tar_target(
+    nli_train_enabled,
+    yaml::read_yaml(config_file)[["nli"]][["configs"]][[nli_active]][["train"]] %||% FALSE
+  ),
+  # Same reasoning again: NULL (the default) trains nli_finetuned_model on
+  # the full pooled dataset as-is; a seed downsamples every label class down
+  # to the smallest class's count first, for class balance -- see
+  # scripts/training/train_nli.py's own downsample_seed handling and the
+  # comment on `train` above for why this is read directly rather than
+  # through the full nli_config blob.
+  tar_target(
+    nli_downsample_seed,
+    yaml::read_yaml(config_file)[["nli"]][["configs"]][[nli_active]][["downsample_seed"]]
+  ),
   # Fixed, not read from config: the reporting layer (nli_overview_data,
   # the label funnel reports, etc.) renders one output per (assessment,
   # granularity) combination via cross() so both are always visible,
@@ -312,10 +333,11 @@ list(
     works_citing_parquet,
     build_works_citing_parquet(
       assessment,
+      works_parquet,
       snowball_parquet,
       "output/works_citing"
     ),
-    pattern = map(assessment, snowball_parquet),
+    pattern = map(assessment, works_parquet, snowball_parquet),
     format = "file"
   ),
 
@@ -675,13 +697,14 @@ list(
     build_nli_ready_evidence_keypaper_parquet(
       assessment,
       key_messages_parquet,
+      works_parquet,
       snowball_parquet,
       workers,
       file.path("output/nli_ready_evidence_keypaper", paste0("granularity=", granularity)),
       granularity,
       claim_completion_model
     ),
-    pattern = map(assessment, key_messages_parquet, snowball_parquet),
+    pattern = map(assessment, key_messages_parquet, works_parquet, snowball_parquet),
     format = "file",
     deployment = "main",
     garbage_collection = TRUE
@@ -1057,11 +1080,38 @@ list(
   # level (confirmed directly: "Column `llm_config` doesn't exist"), same
   # fix build_llm_verification_qa_data.R already uses for its own llm_active
   # handling. See R/build_nli_training_data.R.
+  #
+  # Deliberately does NOT take llm_verification_parquet (the main citing-works
+  # Phase 2 chain) as a tracked pattern dependency, only
+  # llm_verification_keypaper_parquet -- an assessment can have real
+  # snowball/keypaper data (and be worth pulling keypaper-derived training
+  # rows from) long before its full citing-works corpus has been scored
+  # through Phase 1 + Phase 2 (a much bigger, separately-gated spend; see
+  # TD_NLI_training.qmd). Taking llm_verification_parquet as a real pattern
+  # dependency would force targets to build that assessment's ENTIRE
+  # citing-works chain (Phase 1 NLI scoring of every citing work, then Phase
+  # 2 LLM review of whatever gets flagged) just to compute this target, even
+  # for an assessment nobody has asked to score that way yet -- confirmed
+  # this would happen for IAS specifically (its refs/works/snowball,
+  # including the keypaper partition, already exist on disk; nothing
+  # NLI/LLM-related does). Instead the main-corpus path is *computed*
+  # (mirrors build_llm_verification_parquet()'s own output_path formula)
+  # rather than taken from the tracked target, so it carries no targets
+  # dependency at all -- build_nli_training_data()'s own has_data() check
+  # (already needed for the ordinary "nothing routed yet" case) handles a
+  # not-yet-existing path exactly the same as an empty one. An assessment
+  # whose citing-works chain already exists (GA1) still gets full benefit
+  # from it once built; one that doesn't (IAS, for now) simply contributes
+  # keypaper-only rows until/unless its citing-works chain is run later.
   tar_target(
     nli_training_data,
     build_nli_training_data(
       assessment,
-      llm_verification_parquet,
+      file.path(
+        "output/llm_verification/scores",
+        paste0("llm_config=", llm_verification_active),
+        paste0("assessment=", assessment$id)
+      ),
       llm_verification_keypaper_parquet,
       works_parquet,
       works_citing_parquet,
@@ -1071,7 +1121,7 @@ list(
       "output/nli_training"
     ),
     pattern = map(
-      assessment, llm_verification_parquet, llm_verification_keypaper_parquet,
+      assessment, llm_verification_keypaper_parquet,
       works_parquet, works_citing_parquet
     ),
     format = "file",
@@ -1121,6 +1171,100 @@ list(
       file.path("output/reports", out)
     },
     pattern = map(nli_training_qa_data),
+    format = "file",
+    # Same concurrent-quarto_render() guard as every other QA_*_Report
+    # target — avoids two branches racing on the same source .qmd.
+    deployment = "main"
+  ),
+
+  # Target 2h4e: fine-tune the active nli config's model, IFF that config's
+  # own train: field is true (default false) -- see R/build_nli_finetuned_model.R
+  # for the full "why a real train:true/false gate, not just running
+  # train_nli.py by hand" reasoning. A real local CPU training run (~tens of
+  # minutes; see scripts/training/train_nli.py's own module docstring),
+  # opt-in per config so a bare tar_make() never triggers one by surprise.
+  #
+  # nli_training_data is passed as a bare (non-pattern) argument purely to
+  # establish the DAG dependency -- same convention nli_scores_qa_data/
+  # llm_verification_qa_data already use for their own upstream
+  # dependencies, needed here because nli_training_data branches per
+  # assessment (pattern = map(assessment, ...)) while nli_finetuned_model is
+  # a single, non-branching target, so a real pattern= dependency isn't
+  # possible. build_nli_finetuned_model() never reads this argument's value
+  # -- train_nli.py reads output/nli_training directly off disk at runtime
+  # -- it exists only so editing R/build_nli_training_data.R (e.g. the
+  # real_refutes() filter) or re-running nli_training_data for any
+  # assessment correctly marks nli_finetuned_model outdated too, rather than
+  # silently training on stale data the next time train:true triggers it.
+  tar_target(
+    nli_finetuned_model,
+    build_nli_finetuned_model(
+      nli_train_enabled, nli_active,
+      downsample_seed = nli_downsample_seed,
+      nli_training_data_dep = nli_training_data
+    ),
+    format = "file",
+    deployment = "main"
+  ),
+
+  # Target 2h4e' (QA data/report): sibling to nli_training_qa_data/
+  # nli_training_qa_report_html -- same "not a scoring result, a progress
+  # check" framing. Single nli_config scope (fine-tuning pools across
+  # whatever assessments/granularity that config's own training data has,
+  # not per-assessment), so no cross()/map() over assessment here.
+  tar_target(
+    nli_finetuned_model_qa_data,
+    build_nli_finetuned_model_qa_data(nli_finetuned_model, nli_active, "output/tables")
+  ),
+
+  tar_target(
+    nli_finetuned_model_qa_report_qmd,
+    "input/reports/QA_NLI_Finetuned_Model_Report.qmd",
+    format = "file"
+  ),
+
+  # Deliberately does NOT always call quarto::quarto_render() the way every
+  # other QA_*_Report target does -- rendered ONLY when the active config's
+  # train: is actually true (i.e. nli_finetuned_model_qa_data has a real
+  # result, not its empty marker). Rendering an HTML report that only ever
+  # says "no fine-tuned model, train: false" for every config that hasn't
+  # opted in adds file clutter with zero information content; the qmd's own
+  # empty-check (knit_exit()) is a safety net for a config that flips from
+  # true to false again AFTER a real report was already rendered, not the
+  # normal path.
+  tar_target(
+    nli_finetuned_model_qa_report_html,
+    {
+      nli_finetuned_model_qa_report_qmd
+      x <- readRDS(nli_finetuned_model_qa_data)
+      dir.create("output/reports", recursive = TRUE, showWarnings = FALSE)
+      # No bare return() here -- a tar_target() command block is an
+      # evaluated expression, not a function body, so the if/else's own
+      # value (the last thing evaluated in whichever branch runs) is what
+      # this target's value ends up being; that's the deliberate structure
+      # below rather than an early return.
+      if (isTRUE(x$empty)) {
+        message(sprintf(
+          "[nli_finetuned_model_qa_report_html %s] train: false -- skipping report render",
+          x$nli_config
+        ))
+        placeholder <- file.path("output/reports", sprintf(".skipped_%s", x$nli_config))
+        writeLines(
+          "train: false for this nli_config -- no report rendered. See input/config.yaml.",
+          placeholder
+        )
+        placeholder
+      } else {
+        out <- paste0("QA_NLI_Finetuned_Model_Report_", x$nli_config, ".html")
+        quarto::quarto_render(
+          "input/reports/QA_NLI_Finetuned_Model_Report.qmd",
+          output_file = out, execute_dir = getwd(),
+          execute_params = list(nli_config = x$nli_config)
+        )
+        file.rename(file.path("input/reports", out), file.path("output/reports", out))
+        file.path("output/reports", out)
+      }
+    },
     format = "file",
     # Same concurrent-quarto_render() guard as every other QA_*_Report
     # target — avoids two branches racing on the same source .qmd.

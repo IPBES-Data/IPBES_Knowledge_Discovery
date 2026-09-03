@@ -64,18 +64,33 @@ nli_health <- function(base_url, auth_token = NULL) {
   )
 }
 
-# POST one batch of premises against a single hypothesis template. Returns a list
-# (one element per sequence) of named numeric vectors keyed by candidate label.
+# POST one batch of premises against a single hypothesis template (passes = 3,
+# zero-shot: server reformulates each candidate label into its own hypothesis
+# and cross-normalizes the entailment logit across them) OR a single literal
+# hypothesis (passes = 1, a directly fine-tuned classifier: one forward pass,
+# server reads its native N-way softmax directly, mapped back onto
+# candidate_labels by name -- see server.py's _direct_label_order()). Exactly
+# one of hypothesis_template/hypothesis is meaningful per passes value; the
+# caller (score_one_claim.R) only ever supplies the one that applies. Returns
+# a list (one element per sequence) of named numeric vectors keyed by
+# candidate label, regardless of which mode produced them.
 nli_classify_request <- function(base_url, sequences, candidate_labels,
-                                  hypothesis_template, multi_label, batch_size,
+                                  hypothesis_template = NULL, hypothesis = NULL,
+                                  multi_label, batch_size, passes = 3L,
                                   max_length = NULL, auth_token = NULL) {
   body <- list(
     sequences           = as.list(sequences),
     candidate_labels    = as.list(candidate_labels),
-    hypothesis_template = hypothesis_template,
     multi_label         = isTRUE(multi_label),
-    batch_size          = as.integer(batch_size)
+    batch_size          = as.integer(batch_size),
+    passes              = as.integer(passes)
   )
+  if (!is.null(hypothesis_template)) {
+    body$hypothesis_template <- hypothesis_template
+  }
+  if (!is.null(hypothesis)) {
+    body$hypothesis <- hypothesis
+  }
   if (!is.null(max_length)) {
     body$max_length <- as.integer(max_length)
   }

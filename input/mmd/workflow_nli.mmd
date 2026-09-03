@@ -188,6 +188,89 @@ flowchart TD
   %% visual noise.
   llm_verification --> training_export
 
+  %% Fine-tuning itself (scripts/training/train_nli.py) is a manual, local,
+  %% standalone step reading training_db directly -- no action node for it
+  %% (same reasoning training_export's own comment gives), but its QA
+  %% report belongs here as a doc node so it's navigable like every other
+  %% QA report.
+  qa_finetuned@{ shape: doc, label: "QA report<br/><tt>[nli_finetuned_model_qa_report_html]</tt>" }
+  training_db --> qa_finetuned
+
+  subgraph general_reports["General & Additional Reports (dynamic Shiny display, no new computation)"]
+    direction TB
+
+    %% Nodes -- these are read-only reporting/browsing views over data
+    %% already produced above; none of them triggers new scoring/LLM calls.
+    report_overview@{ shape: doc, label: "NLI label/confidence/alignment overview + interactive BM explorer<br/><tt>[nli_overview_data -> nli_overview_figures, nli_bm_explorer_html]</tt>" }
+    report_overlap@{ shape: doc, label: "Overlap tables: key papers cited by >1 BM; post-2018 citing works cited by >5 BMs<br/><tt>[overlap_key_paper_table, overlap_after_2018_sub_messages_table, overlap_after_2018_background_messages_table]</tt>" }
+    report_pub_year@{ shape: doc, label: "New publications per year, by background message<br/><tt>[fig_pub_per_year]</tt>" }
+    report_funnel@{ shape: doc, label: "REFUTES/SUPPORTS label funnel: corpus -&gt; NLI-flagged -&gt; LLM-confirmed<br/><tt>[refutes_funnel_data/figures/tables, supports_funnel_data/figures/tables]</tt>" }
+  end
+
+  nli_scores_db --> report_overview
+  citing_db --> report_overview
+  works_db --> report_overlap
+  citing_db --> report_overlap
+  citing_db --> report_pub_year
+  nli_scores_db --> report_funnel
+  llm_scores_db --> report_funnel
+
+  %% Workflow-diagram navigation (shiny_app/): each clickable node gets a
+  %% `click <id> href "#!<id>" "<tooltip>"` directive. Verified directly
+  %% (scratchpad render) that mermaid-cli's static SVG output preserves an
+  %% href-style click directive as a real `<a xlink:href="#!...">` element,
+  %% including a fragment-only href like this one -- unlike a `click <id>
+  %% call <fn>(...)` JS-callback directive, which silently does nothing in
+  %% a headless-rendered SVG (no mermaid.js runtime attached to intercept
+  %% it). shiny_app/R/mod_workflow.R embeds this SVG inline and intercepts
+  %% clicks on these anchors client-side via Shiny.setInputValue() rather
+  %% than letting them navigate for real (which would reload the whole
+  %% Shiny session) -- harmless everywhere else this SVG is embedded (e.g.
+  %% IPBES_Fact_Checker.qmd), where an unintercepted "#!..." link is just a
+  %% no-op anchor. Node coverage and the kind/description/source-file
+  %% metadata for each id lives in shiny_app/R/workflow_node_metadata.R,
+  %% maintained by hand alongside this block -- config/helper nodes
+  %% (config_file, assessment_list, assessment_id, nli_active, llm_active,
+  %% sparql, zotero_api, openalex, nli_server, llm_server) are deliberately
+  %% left non-clickable.
+  click refs_db href "#!refs_db" "References DB"
+  click key_messages_db href "#!key_messages_db" "Key + Background Messages DB"
+  click zotero_db href "#!zotero_db" "Zotero DB"
+  click works_db href "#!works_db" "OpenAlex Works DB"
+  click citing_db href "#!citing_db" "Citing Works DB"
+  click snowball_db href "#!snowball_db" "Snowball DB"
+  click llm_scope_db href "#!llm_scope_db" "Candidate Scope DB"
+  click nli_ready_db href "#!nli_ready_db" "NLI-Ready DB"
+  click nli_scores_db href "#!nli_scores_db" "NLI Scores DB"
+  click nli_scores_kp_db href "#!nli_scores_kp_db" "Key-paper NLI Scores DB"
+  click llm_scores_db href "#!llm_scores_db" "LLM Verification Scores DB"
+  click llm_scores_kp_db href "#!llm_scores_kp_db" "Key-paper LLM Verification Scores DB"
+  click training_db href "#!training_db" "Training Data DB"
+
+  click build_refs href "#!build_refs" "Extract references"
+  click build_key_messages href "#!build_key_messages" "Extract Key/Background Messages"
+  click download_zotero href "#!download_zotero" "Download Zotero group items"
+  click download_works href "#!download_works" "Query OpenAlex works by DOI"
+  click snowball href "#!snowball" "Snowball search"
+  click llm_scope href "#!llm_scope" "Match citing works per claim"
+  click nli_segment href "#!nli_segment" "Segment each BM into claims"
+  click nli_scoring href "#!nli_scoring" "Classify each citing work vs one BM claim"
+  click nli_keypaper_scoring href "#!nli_keypaper_scoring" "Score key/seed papers vs their own BM"
+  click llm_verify href "#!llm_verify" "Route + LLM-review flagged pairs"
+  click llm_verify_keypaper href "#!llm_verify_keypaper" "LLM-review every key/seed paper"
+  click training_extract href "#!training_extract" "Extract fine-tuning training data"
+
+  click qa_bm_split href "#!qa_bm_split" "QA report: BM split"
+  click qa_nli_scores href "#!qa_nli_scores" "QA report: NLI scores"
+  click qa_llm_verify href "#!qa_llm_verify" "QA report: LLM verification"
+  click qa_training href "#!qa_training" "QA report: training data"
+  click qa_finetuned href "#!qa_finetuned" "QA report: fine-tuned model"
+
+  click report_overview href "#!report_overview" "NLI overview + BM explorer"
+  click report_overlap href "#!report_overlap" "Overlap tables"
+  click report_pub_year href "#!report_pub_year" "Publications per year"
+  click report_funnel href "#!report_funnel" "REFUTES/SUPPORTS label funnel"
+
   %% Styles
   classDef input_file  fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:1.5px;
   classDef config      fill:#ecfccb,stroke:#65a30d,color:#14532d,stroke-width:1px;
@@ -214,4 +297,4 @@ flowchart TD
   class citing_db,refs_db,key_messages_db,zotero_db,works_db,nli_ready_db,nli_scores_db,llm_scope_db,llm_scores_db,llm_scores_kp_db,snowball_db,nli_scores_kp_db,training_db database;
   class build_refs,build_key_messages,download_zotero,download_works,snowball,nli_scoring,nli_segment,nli_keypaper_scoring,llm_scope,llm_verify,llm_verify_keypaper,training_extract processing;
   class sparql,zotero_api,openalex,nli_server,llm_server helper;
-  class qa_bm_split,qa_nli_scores,qa_llm_verify,qa_training qa_report;
+  class qa_bm_split,qa_nli_scores,qa_llm_verify,qa_training,qa_finetuned,report_overview,report_overlap,report_pub_year,report_funnel qa_report;

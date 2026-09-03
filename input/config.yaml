@@ -11,14 +11,15 @@ assessments:
   - id: GA1
     ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/main/Global%20Assessment%201/GA1_v09.ttl
     full_text: false
+  - id: VA
+    ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Values%20Assessment/VA_v05.ttl
+    full_text: false
+  - id: TCA
+    ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Transformative%20Change%20Assessment/TCA_v02.ttl
+    full_text: false
   # - id: IAS
   #   ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Invasive%20Alien%20Species%20Assessment/IAS_v04.ttl
   #   full_text: true
-
-  # Future assessments (uncomment when TTL files are available):
-  # - id: VA
-  #   ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/main/Values%20Assessment/VA.ttl
-  #   full_text: false
 
 # NLI alignment backend. The pipeline POSTs (premise, hypothesis) pairs to a
 # zero-shot NLI server (see external/runpod/docker/nli-runpod/). Switch models by changing
@@ -102,24 +103,33 @@ nli:
       model: MoritzLaurer/bge-m3-zeroshot-v2.0-c   # label only; verified against /health. max_position_embeddings ~8194 (real limit, not this project's choice)
       candidate_labels: ["supports", "refutes", "is not relevant to"]
       hypothesis_template: "This paper {} the following claim: %s"
+      passes: 3   # zero-shot: 3 forward passes per claim, one per reformulated candidate label, cross-normalized (see nli-runpod/server.py); a directly fine-tuned classifier instead uses passes: 1 (one forward pass, native head softmax) -- see the commented deberta_finetuned template below
       batch_size: 64          # measured: 33.6 pairs/sec on one L4 pod at this setting (256-premise real batch) -- ~2.7x deberta_zeroshot's 12.5 pairs/sec at batch_size 128 on the same batch
       max_length: 2048        # comfortably covers complete_bm's largest measured claim (~885 tokens) + a full premise, well under the ~8194 ceiling
       uncertain_threshold: 0.60   # spot-checked (n=350: 150 deberta REFUTES-certain pairs + 200 general random, scored live) -- overall confidence shape closely matches deberta_zeroshot's own full-corpus distribution (median ~0.50 vs ~0.51), so left unchanged; not a rigorous calibration, see TD_BM_NLI_approach.qmd
       nei_threshold: 0.90
       granularity: complete_bm    #  naive_bm also supported/tested (see comment above nli:); naive_bm is the current default corpus
+      train: false   # fine-tune this config's model (scripts/training/train_nli.py, via the nli_finetuned_model target) -- real local CPU time (~25min for GA1-only data), opt-in, default false. See nli_finetuned_model/R/build_nli_finetuned_model.R.
+      downsample_seed: null   # null (default) = train on the full pooled dataset as-is. A seed (e.g. 42) downsamples every label class down to the smallest class's count before training, for class balance -- real risk once multiple assessments are pooled and one (e.g. a keypaper-only assessment) contributes far more SUPPORTS/NOT_ENOUGH_INFO than REFUTES. See scripts/training/train_nli.py.
 
     bge_m3_zeroshot_atomic_bm:
       scheme: https
-      host: ["u72b26m0yivsz3-8080.proxy.runpod.net"]
+      host: ["qlokuriufunkk3-8080.proxy.runpod.net", "qlokuriufunkk3-8080.proxy.runpod.net", "cqa0a62sszktfh-8080.proxy.runpod.net", "0v7ju37n9yld2e-8080.proxy.runpod.net", "0zdde0l5ykaeka-8080.proxy.runpod.net", "wfdrj1kmd7dkt2-8080.proxy.runpod.net"]
+      # kuhykgssi61j0v-8080.proxy.runpod.net dropped for now -- confirmed
+      # unreachable (HTTP 404 on /health, not just a boot-time delay) while
+      # the other 5 were healthy. Add it back once its pod is confirmed up.
       auth_token_keyring: null
       model: MoritzLaurer/bge-m3-zeroshot-v2.0-c   # label only; verified against /health. max_position_embeddings ~8194 (real limit, not this project's choice)
       candidate_labels: ["supports", "refutes", "is not relevant to"]
       hypothesis_template: "This paper {} the following claim: %s"
+      passes: 3   # zero-shot: 3 forward passes per claim, one per reformulated candidate label, cross-normalized -- see bge_m3_zeroshot_complete_bm's own passes: comment above
       batch_size: 64          # measured: 33.6 pairs/sec on one L4 pod at this setting (256-premise real batch) -- ~2.7x deberta_zeroshot's 12.5 pairs/sec at batch_size 128 on the same batch
       max_length: 2048        # comfortably covers complete_bm's largest measured claim (~885 tokens) + a full premise, well under the ~8194 ceiling
       uncertain_threshold: 0.60   # spot-checked (n=350: 150 deberta REFUTES-certain pairs + 200 general random, scored live) -- overall confidence shape closely matches deberta_zeroshot's own full-corpus distribution (median ~0.50 vs ~0.51), so left unchanged; not a rigorous calibration, see TD_BM_NLI_approach.qmd
       nei_threshold: 0.90
       granularity: atomic_bm    #  naive_bm also supported/tested (see comment above nli:); naive_bm is the current default corpus
+      train: true   # see bge_m3_zeroshot_complete_bm's own train: comment above
+      downsample_seed: 13   # see bge_m3_zeroshot_complete_bm's own downsample_seed: comment above
 
     bge_m3_zeroshot_naive_bm:
       scheme: https
@@ -129,20 +139,35 @@ nli:
       model: MoritzLaurer/bge-m3-zeroshot-v2.0-c   # label only; verified against /health. max_position_embeddings ~8194 (real limit, not this project's choice)
       candidate_labels: ["supports", "refutes", "is not relevant to"]
       hypothesis_template: "This paper {} the following claim: %s"
+      passes: 3   # zero-shot: 3 forward passes per claim, one per reformulated candidate label, cross-normalized -- see bge_m3_zeroshot_complete_bm's own passes: comment above
       batch_size: 64          # measured: 33.6 pairs/sec on one L4 pod at this setting (256-premise real batch) -- ~2.7x deberta_zeroshot's 12.5 pairs/sec at batch_size 128 on the same batch
       max_length: 2048        # comfortably covers complete_bm's largest measured claim (~885 tokens) + a full premise, well under the ~8194 ceiling
       uncertain_threshold: 0.60   # spot-checked (n=350: 150 deberta REFUTES-certain pairs + 200 general random, scored live) -- overall confidence shape closely matches deberta_zeroshot's own full-corpus distribution (median ~0.50 vs ~0.51), so left unchanged; not a rigorous calibration, see TD_BM_NLI_approach.qmd
       nei_threshold: 0.90
       granularity:  naive_bm   # complete_bm also supported/tested (see comment above nli:); naive_bm is the current default corpus
+      train: false   # see bge_m3_zeroshot_complete_bm's own train: comment above
+      downsample_seed: null   # see bge_m3_zeroshot_complete_bm's own downsample_seed: comment above
 
-    # deberta_finetuned:
+    # nli_finetuned: a directly fine-tuned 3-way classifier (scripts/training/
+    # train_nli.py), NOT a zero-shot model -- passes: 1 tells score_one_claim.R
+    # and nli-runpod/server.py to skip the candidate-label reformulation
+    # scheme entirely: one forward pass per (premise, raw claim text) pair,
+    # reading the model's own native 3-way softmax directly, instead of 3
+    # passes over reformulated "This paper {supports/refutes/is not relevant
+    # to} the claim" hypotheses. candidate_labels here MUST equal the
+    # fine-tuned model's own id2label values (server.py's _direct_label_order()
+    # matches by name, not position, and fails loudly on a mismatch) -- hence
+    # SUPPORTS/REFUTES/NOT_ENOUGH_INFO here, not the lowercase short phrases
+    # the zero-shot configs above use. hypothesis_template is unused in this
+    # mode (no per-label reformulation happens) and is omitted.
+    # nli_finetuned:
     #   scheme: https
     #   host: <pod-id>-8080.proxy.runpod.net   # fill in after the pod boots
     #   port: null
     #   auth_token_keyring: null
     #   model: /app/nli-ipbes-finetuned/best   # baked into the Docker image
-    #   candidate_labels: ["supports", "refutes", "is not relevant to"]
-    #   hypothesis_template: "This paper {} the following claim: %s"
+    #   candidate_labels: ["SUPPORTS", "REFUTES", "NOT_ENOUGH_INFO"]
+    #   passes: 1
     #   batch_size: 32
     #   uncertain_threshold: 0.60
     #   nei_threshold: 0.90

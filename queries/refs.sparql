@@ -3,6 +3,14 @@ PREFIX dcterms: <http://purl.org/dc/terms/>
 PREFIX owl:    <http://www.w3.org/2002/07/owl#>
 
 # DB1: references — KM → BM → SM → SubChapter ← Reference(doi)
+# hasDoi is OPTIONAL, not required -- confirmed directly against real LOD
+# data that not every assessment populates it (VA: 0 of 3079 References
+# have ipbes:hasDoi at all, vs. GA1/TCA where the large majority do).
+# Requiring it here would silently return zero rows for such an assessment
+# rather than the references themselves. R/write_refs_parquet.R backfills
+# a missing doi from zotero_parquet's own already-fetched DOI field
+# (matched via ?zotero's group id/item key) when possible -- see that
+# file's own comment for why this is a cheap join, not a new API call.
 SELECT DISTINCT ?km_id ?bm_id ?sm_id ?doi ?description ?zotero
 WHERE {
   GRAPH <%GRAPH_IRI%> {
@@ -14,8 +22,8 @@ WHERE {
     ?sm  dcterms:identifier ?sm_id ;
          ipbes:SubChapter ?sch .
     ?ref a ipbes:Reference ;
-         ipbes:SubChapter ?sch ;
-         ipbes:hasDoi ?doi .
+         ipbes:SubChapter ?sch .
+    OPTIONAL { ?ref ipbes:hasDoi ?doi . }
     OPTIONAL { ?ref ipbes:hasDescription ?description . }
     OPTIONAL { ?ref owl:sameAs ?zotero . }
   }
