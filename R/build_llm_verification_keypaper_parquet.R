@@ -285,12 +285,18 @@ build_llm_verification_keypaper_parquet <- function(
       quote, quote_verbatim, explanation
     )
 
+  # Partitioned to nli_route, NOT down to km/bm: the key-paper corpus is
+  # small and bounded, so km/bm partitioning produced 688 files averaging
+  # ~145 KB, of which roughly 4.4 KB each is pure parquet footer/schema
+  # overhead. km and bm remain ordinary columns, and nothing filters this
+  # dataset on them at the Arrow level (nli_route IS filtered on -- see
+  # build_label_funnel_data.R -- so that level stays).
   if (dir.exists(output_path)) unlink(output_path, recursive = TRUE, force = TRUE)
   arrow::write_dataset(
     dataset = out,
     path = output_root,
     format = "parquet",
-    partitioning = c("llm_config", "assessment", "nli_route", "km", "bm"),
+    partitioning = c("llm_config", "assessment", "nli_route"),
     existing_data_behavior = "delete_matching"
   )
 

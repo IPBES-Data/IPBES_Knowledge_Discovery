@@ -17,9 +17,9 @@ assessments:
   - id: TCA
     ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Transformative%20Change%20Assessment/TCA_v02.ttl
     full_text: false
-  # - id: IAS
-  #   ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Invasive%20Alien%20Species%20Assessment/IAS_v04.ttl
-  #   full_text: true
+  - id: IAS
+    ttl_url: https://raw.githubusercontent.com/IPBES-Data/IPBES_LOD/refs/heads/main/Invasive%20Alien%20Species%20Assessment/IAS_v05.ttl
+    full_text: true
 
 # NLI alignment backend. The pipeline POSTs (premise, hypothesis) pairs to a
 # zero-shot NLI server (see external/runpod/docker/nli-runpod/). Switch models by changing

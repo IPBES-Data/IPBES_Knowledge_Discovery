@@ -1,26 +1,31 @@
-# Reconciliation utility for Phase 1 (NLI scoring) output — NOT wired into
-# _targets.R as a target. Nothing in the pipeline prunes scored claims that
-# no longer correspond to anything in the current nli_ready_evidence_parquet
-# input (a since-changed segmentation boundary, a renumbered sentence, ...),
-# and score_one_claim()'s own resumability check has no way to notice this
-# either — it only ever looks at ITS OWN claim_id, never at what else exists
-# on disk. Run this by hand (e.g. from an interactive R session) when you
-# want to check for or clean up orphans; it never deletes anything unless
-# `delete = TRUE` is passed explicitly.
+# READ-ONLY audit for Phase 1 (NLI scoring) output — NOT wired into
+# _targets.R as a target.
+#
+# Orphaned claims (a since-changed segmentation boundary, a renumbered
+# sentence, ...) are now pruned automatically by consolidate_nli_scores()
+# (R/consolidate_nli_scores.R), which drops rows whose claim_id is absent from
+# the current claim list each time it rewrites a (km, bm) group. This utility
+# is what you run BEFORE that, to see what would go — in particular when
+# consolidation refuses to prune (empty upstream claim list, or a prune
+# exceeding max_prune_fraction) and you need to decide whether the upstream
+# list is wrong or the removal is genuine. It never modifies anything.
 #
 # claim_id alone is not globally unique — the same claim_id string (e.g.
 # "bm_description-01") is reused across every BM in an assessment — so the
-# comparison is always on the full (km, bm, claim_id) triple, matching how
-# score_one_claim() itself partitions its output.
+# comparison is always on the full (km, bm, claim_id) triple.
+#
+# Since consolidation, `claim_id` is a COLUMN inside each group's parquet
+# rather than a partition directory, so the on-disk side is read from the
+# dataset itself instead of parsed out of directory names.
 
 # One (assessment, granularity, nli_config) combination. nli_ready_path and
 # nli_scores_path are the same assessment-scoped directories the pipeline
 # itself uses (see nli_ready_evidence_parquet / nli_scores_by_claim_evidence
 # in _targets.R) — pass them in already resolved, same convention as the
 # rest of R/build_*.R.
-find_orphaned_nli_scores <- function(nli_ready_path, nli_scores_path, delete = FALSE) {
+find_orphaned_nli_scores <- function(nli_ready_path, nli_scores_path) {
   empty <- dplyr::tibble(
-    km = character(), bm = character(), claim_id = character(), path = character()
+    km = character(), bm = character(), claim_id = character()
   )
 
   if (!dir.exists(nli_ready_path) || !dir.exists(nli_scores_path)) {
@@ -38,36 +43,19 @@ find_orphaned_nli_scores <- function(nli_ready_path, nli_scores_path, delete = F
     dplyr::distinct(km, bm, claim_id)
   expected_key <- paste(expected$km, expected$bm, expected$claim_id, sep = "")
 
-  claim_dirs <- list.files(
-    nli_scores_path,
-    recursive = TRUE, include.dirs = TRUE, full.names = TRUE,
-    pattern = "^claim_id="
-  )
-  claim_dirs <- claim_dirs[
-    dir.exists(claim_dirs) & lengths(lapply(claim_dirs, list.files, pattern = "\\.parquet$")) > 0
-  ]
-
-  if (!length(claim_dirs)) {
-    return(empty)
-  }
-
-  parse_one <- function(path) {
-    parts <- strsplit(path, "/", fixed = TRUE)[[1]]
-    km_part    <- parts[grepl("^km=", parts)]
-    bm_part    <- parts[grepl("^bm=", parts)]
-    claim_part <- parts[grepl("^claim_id=", parts)]
-    if (!length(km_part) || !length(bm_part) || !length(claim_part)) {
-      return(NULL)
+  on_disk <- tryCatch(
+    arrow::open_dataset(nli_scores_path) |>
+      dplyr::distinct(km, bm, claim_id) |>
+      dplyr::collect(),
+    error = function(e) {
+      warning(sprintf(
+        "[NLI orphan-check] could not read %s: %s",
+        nli_scores_path, conditionMessage(e)
+      ), call. = FALSE)
+      NULL
     }
-    dplyr::tibble(
-      km       = sub("^km=", "", km_part[[1L]]),
-      bm       = sub("^bm=", "", bm_part[[1L]]),
-      claim_id = sub("^claim_id=", "", claim_part[[length(claim_part)]]),
-      path     = path
-    )
-  }
-  on_disk <- dplyr::bind_rows(lapply(claim_dirs, parse_one))
-  if (!nrow(on_disk)) {
+  )
+  if (is.null(on_disk) || !nrow(on_disk)) {
     return(empty)
   }
   on_disk_key <- paste(on_disk$km, on_disk$bm, on_disk$claim_id, sep = "")
@@ -76,23 +64,20 @@ find_orphaned_nli_scores <- function(nli_ready_path, nli_scores_path, delete = F
 
   if (nrow(orphaned)) {
     message(sprintf(
-      "[NLI orphan-check] %d/%d scored claim director%s under %s have no matching claim in %s",
-      nrow(orphaned), nrow(on_disk), if (nrow(orphaned) == 1) "y" else "ies",
+      "[NLI orphan-check] %d/%d scored claim%s under %s have no matching claim in %s",
+      nrow(orphaned), nrow(on_disk), if (nrow(orphaned) == 1) "" else "s",
       nli_scores_path, nli_ready_path
     ))
     for (i in seq_len(nrow(orphaned))) {
       message(sprintf(
-        "  - km=%s bm=%s claim_id=%s (%s)",
-        orphaned$km[i], orphaned$bm[i], orphaned$claim_id[i], orphaned$path[i]
+        "  - km=%s bm=%s claim_id=%s",
+        orphaned$km[i], orphaned$bm[i], orphaned$claim_id[i]
       ))
     }
-    if (delete) {
-      for (p in orphaned$path) unlink(p, recursive = TRUE, force = TRUE)
-      message(sprintf(
-        "[NLI orphan-check] deleted %d orphaned director%s",
-        nrow(orphaned), if (nrow(orphaned) == 1) "y" else "ies"
-      ))
-    }
+    message(
+      "[NLI orphan-check] these are pruned automatically the next time ",
+      "consolidate_nli_scores() rewrites their (km, bm) group."
+    )
   } else {
     message(sprintf(
       "[NLI orphan-check] no orphans found under %s (%d claim%s checked)",
@@ -109,14 +94,12 @@ find_orphaned_nli_scores <- function(nli_ready_path, nli_scores_path, delete = F
 # (R/branch_helpers.R) rather than assuming nli.active — same reasoning as
 # the nli_overview_data/refutes_funnel_data/supports_funnel_data fix: each
 # granularity is normally scored under its OWN dedicated config, not
-# whichever one happens to be active right now. Read-only by default; pass
-# delete = TRUE to remove every orphan found across every combination in
-# one go (there is no undo — prefer running once with the default first and
-# reviewing the report).
+# whichever one happens to be active right now. Read-only: removal is
+# consolidate_nli_scores()'s job now, guarded by its own emptiness and
+# max_prune_fraction checks.
 find_orphaned_nli_scores_all <- function(
   config_path = "input/config.yaml",
-  nli_granularities = c("naive_bm", "complete_bm", "atomic_bm"),
-  delete = FALSE
+  nli_granularities = c("naive_bm", "complete_bm", "atomic_bm")
 ) {
   cfg <- yaml::read_yaml(config_path)
   assessment_ids <- vapply(cfg[["assessments"]], `[[`, character(1), "id")
@@ -143,7 +126,7 @@ find_orphaned_nli_scores_all <- function(
       paste0("nli_config=", nli_config_name), paste0("assessment=", assessment_id)
     )
 
-    out <- find_orphaned_nli_scores(nli_ready_path, nli_scores_path, delete = delete)
+    out <- find_orphaned_nli_scores(nli_ready_path, nli_scores_path)
     if (nrow(out)) {
       out$assessment  <- assessment_id
       out$granularity <- granularity

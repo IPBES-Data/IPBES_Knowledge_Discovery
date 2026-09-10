@@ -7,11 +7,28 @@
 # LOCAL concurrency (how many claims run at once); the lock decides which
 # REMOTE host a given claim uses.
 #
+# Output layout: each claim writes its rows to its OWN scratch file, and a
+# separate consolidation pass (consolidate_nli_scores(),
+# R/consolidate_nli_scores.R) merges every scratch file of a (km, bm) group
+# into that group's single consolidated parquet once per run. `claim_id` is
+# therefore a plain COLUMN here, not a partition level: partitioning down to
+# claim_id produced ~1,276 files averaging 6 KB for the keypaper chain alone,
+# where roughly 4.4 KB per file is pure parquet footer/schema/column-stats
+# overhead. Writing per-claim scratch files keeps this function exactly as
+# contention-free as the old per-claim partition directories (each branch
+# owns a uniquely-named file, no locking), while paying the full read+rewrite
+# of the larger consolidated file once per (km, bm) per run instead of once
+# per claim.
+#
 # Resumable: if this claim's output already exists on disk, skip immediately
 # (also lets targets' own branch caching skip re-running unchanged claims on
 # a subsequent tar_make(), but this on-disk check additionally recognizes
 # claims scored by an earlier run/system that targets itself has no cache
-# entry for). The skip is guarded by a content check, not just presence:
+# entry for). BOTH locations are checked — the consolidated file and this
+# claim's not-yet-merged scratch file — so a run interrupted before
+# consolidation never re-pays for scoring it already did.
+#
+# The skip is guarded by a content check, not just presence:
 # `claim_id` is a structural key (sentence_source + sentence_number), not a
 # hash of the claim text, so the SAME claim_id can end up holding different
 # text across runs (a re-segmented boundary, a re-completed atomic_bm
@@ -20,6 +37,12 @@
 # current claim_unit$claim before trusting the skip means a content change
 # forces a rescore even when claim_id didn't change, instead of silently
 # serving scores for text that's no longer current.
+#
+# Un-migrated-state guard: a (km, bm) holding legacy `claim_id=*/` partition
+# directories but no consolidated parquet means the one-time migration
+# (R/migrate_nli_scores_consolidate.R) has not been run. Left undetected that
+# state reads as "nothing scored yet" and would re-dispatch the entire
+# corpus at real GPU cost, so it stop()s loudly instead.
 #
 # Failure isolation: this function does NOT catch-and-swallow errors from
 # the classify call — it lets them propagate. Combined with
@@ -38,36 +61,98 @@ score_one_claim <- function(
   cfg <- if (is.null(nli_config)) list() else nli_config
   assessment_id <- claim_unit$assessment
 
+  this_claim_id <- claim_unit$claim_id
+
   output_path <- file.path(
     output_root, paste0("nli_config=", nli_active), paste0("assessment=", assessment_id)
   )
-  claim_dir <- file.path(
-    output_path, paste0("km=", claim_unit$km), paste0("bm=", claim_unit$bm),
-    paste0("claim_id=", claim_unit$claim_id)
+  bm_dir <- file.path(
+    output_path, paste0("km=", claim_unit$km), paste0("bm=", claim_unit$bm)
   )
+  scratch_dir <- file.path(
+    output_root, ".scratch", paste0("nli_config=", nli_active),
+    paste0("assessment=", assessment_id),
+    paste0("km=", claim_unit$km), paste0("bm=", claim_unit$bm)
+  )
+  scratch_file <- file.path(scratch_dir, paste0(this_claim_id, ".parquet"))
 
-  if (dir.exists(claim_dir) && length(list.files(claim_dir, pattern = "\\.parquet$"))) {
+  # The branch's return value: a small record, NOT a file path. Returning the
+  # consolidated file path would make every branch of a (km, bm) return the
+  # same path, whose hash changes as sibling branches write — permanent
+  # invalidation churn under format = "file". A plain record also means
+  # consolidation is free to delete the scratch file afterwards without
+  # invalidating anything.
+  record <- function(status, n_rows = 0L) {
+    list(
+      nli_config = nli_active, assessment = assessment_id,
+      km = claim_unit$km, bm = claim_unit$bm, claim_id = this_claim_id,
+      claim = claim_unit$claim, scratch_file = scratch_file,
+      status = status, n_rows = as.integer(n_rows)
+    )
+  }
+
+  # Read the consolidated file(s) by explicit path rather than open_dataset()
+  # on bm_dir: any stray legacy claim_id=*/ subdirectory would otherwise be
+  # picked up as a partition level and collide with the claim_id column.
+  consolidated_files <- if (dir.exists(bm_dir)) {
+    list.files(bm_dir, pattern = "\\.parquet$", full.names = TRUE)
+  } else {
+    character(0)
+  }
+  legacy_dirs <- if (dir.exists(bm_dir)) {
+    grep("/claim_id=[^/]+$", list.dirs(bm_dir, recursive = FALSE), value = TRUE)
+  } else {
+    character(0)
+  }
+
+  if (!length(consolidated_files) && length(legacy_dirs)) {
+    stop(sprintf(
+      paste0(
+        "[NLI %s] km=%s/bm=%s holds %d legacy claim_id=*/ partition director%s but no ",
+        "consolidated parquet — the one-time migration has not been run for this group. ",
+        "Run migrate_nli_scores_consolidate() (R/migrate_nli_scores_consolidate.R) before ",
+        "scoring, or every already-scored claim here would be re-dispatched at real GPU cost."
+      ),
+      assessment_id, claim_unit$km, claim_unit$bm,
+      length(legacy_dirs), if (length(legacy_dirs) == 1) "y" else "ies"
+    ))
+  }
+
+  cached_claim <- character(0)
+  if (length(consolidated_files)) {
     cached_claim <- tryCatch(
-      arrow::open_dataset(claim_dir) |>
+      arrow::open_dataset(consolidated_files) |>
+        dplyr::filter(claim_id == .env$this_claim_id) |>
         dplyr::select(claim) |>
         utils::head(1) |>
         dplyr::collect() |>
         dplyr::pull(claim),
-      error = function(e) NA_character_
+      error = function(e) character(0)
     )
-    cached_claim <- if (length(cached_claim)) cached_claim[[1L]] else NA_character_
+  }
+  # Not merged yet? A scratch file from an interrupted run still counts as
+  # scored — otherwise stopping before consolidation would re-pay for it.
+  if (!length(cached_claim) && file.exists(scratch_file)) {
+    cached_claim <- tryCatch(
+      arrow::read_parquet(scratch_file) |>
+        utils::head(1) |>
+        dplyr::pull(claim),
+      error = function(e) character(0)
+    )
+  }
 
-    if (identical(cached_claim, claim_unit$claim)) {
+  if (length(cached_claim)) {
+    if (identical(cached_claim[[1L]], claim_unit$claim)) {
       message(sprintf(
         "[NLI %s] claim_id=%s (km=%s/bm=%s) already scored — skipping",
-        assessment_id, claim_unit$claim_id, claim_unit$km, claim_unit$bm
+        assessment_id, this_claim_id, claim_unit$km, claim_unit$bm
       ))
-      return(claim_dir)
+      return(record("skipped"))
     }
 
     message(sprintf(
       "[NLI %s] claim_id=%s (km=%s/bm=%s): cached claim text differs from the current one — rescoring",
-      assessment_id, claim_unit$claim_id, claim_unit$km, claim_unit$bm
+      assessment_id, this_claim_id, claim_unit$km, claim_unit$bm
     ))
   }
 
@@ -83,9 +168,9 @@ score_one_claim <- function(
   if (!nrow(cw)) {
     message(sprintf(
       "[NLI %s] claim_id=%s (km=%s/bm=%s): no premises found — nothing to score",
-      assessment_id, claim_unit$claim_id, claim_unit$km, claim_unit$bm
+      assessment_id, this_claim_id, claim_unit$km, claim_unit$bm
     ))
-    return(character(0))
+    return(record("no_premises"))
   }
 
   candidate_labels <- as.character(nli_cfg_get(
@@ -244,13 +329,15 @@ score_one_claim <- function(
     uncertain       = !is.na(confidence) & confidence < uncertain_threshold
   )
 
-  arrow::write_dataset(
-    dataset      = out,
-    path         = output_root,
-    format       = "parquet",
-    partitioning = c("nli_config", "assessment", "km", "bm", "claim_id"),
-    existing_data_behavior = "overwrite"
-  )
+  # Scratch write only — consolidate_nli_scores() merges this into the (km,
+  # bm) group's single parquet and deletes the scratch file. nli_config /
+  # assessment / km / bm stay in the frame here purely so a stray scratch
+  # file is self-describing if a run dies mid-way; consolidation drops them
+  # again, since they live in the consolidated file's own Hive path.
+  dir.create(scratch_dir, recursive = TRUE, showWarnings = FALSE)
+  tmp <- paste0(scratch_file, ".tmp")
+  arrow::write_parquet(out, tmp)
+  file.rename(tmp, scratch_file)
 
-  claim_dir
+  record("scored", nrow(out))
 }

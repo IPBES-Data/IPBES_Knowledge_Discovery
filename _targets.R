@@ -580,6 +580,13 @@ list(
     unlist(nli_claim_units_evidence, recursive = FALSE),
     iteration = "list"
   ),
+  # NOT format = "file": each branch returns a small record, not a path. The
+  # scored rows go to a per-claim scratch file, and the branches all feed
+  # nli_scores_evidence_consolidated below, which merges them into one
+  # parquet per (km, bm) and deletes the scratch. Returning the consolidated
+  # path here instead would have every branch of a (km, bm) return the SAME
+  # file, whose hash changes as sibling branches write — permanent
+  # invalidation churn. See R/score_one_claim.R's header.
   tar_target(
     nli_scores_by_claim_evidence,
     score_one_claim(
@@ -590,8 +597,24 @@ list(
       output_root = file.path("output/nli_scores_evidence", paste0("granularity=", granularity))
     ),
     pattern = map(nli_claim_units_evidence_flat),
-    format = "file",
     error = "continue"
+  ),
+
+  # Merge this run's scratch files into one parquet per (nli_config,
+  # assessment, km, bm), and prune claims no longer present upstream. Depends
+  # on the scoring branches AGGREGATED (no pattern =), so it runs once after
+  # they all finish. Everything downstream reads this, not the scoring target,
+  # so nothing can observe a half-merged tree.
+  tar_target(
+    nli_scores_evidence_consolidated,
+    consolidate_nli_scores(
+      nli_scores_by_claim_evidence,
+      nli_claim_units_evidence_flat,
+      output_root = file.path("output/nli_scores_evidence", paste0("granularity=", granularity)),
+      nli_active = nli_active
+    ),
+    format = "file",
+    deployment = "main"
   ),
 
   # Cleanup: score_one_claim()'s per-host dispatch locks (output/nli_scores/
@@ -647,7 +670,7 @@ list(
       nli_config_for_granularity(nli_configs_all, nli_granularities, nli_active),
       works_citing_parquet,
       "output/tables",
-      nli_scores_by_claim_evidence,
+      nli_scores_evidence_consolidated,
       nli_granularities
     ),
     pattern = cross(map(assessment, works_citing_parquet), nli_granularities),
@@ -720,6 +743,7 @@ list(
     unlist(nli_claim_units_evidence_keypaper, recursive = FALSE),
     iteration = "list"
   ),
+  # Same scratch-then-consolidate split as the citing-works chain above.
   tar_target(
     nli_scores_keypaper_evidence,
     score_one_claim(
@@ -730,8 +754,19 @@ list(
       output_root = file.path("output/nli_scores_evidence_keypaper", paste0("granularity=", granularity))
     ),
     pattern = map(nli_claim_units_evidence_keypaper_flat),
-    format = "file",
     error = "continue"
+  ),
+
+  tar_target(
+    nli_scores_keypaper_evidence_consolidated,
+    consolidate_nli_scores(
+      nli_scores_keypaper_evidence,
+      nli_claim_units_evidence_keypaper_flat,
+      output_root = file.path("output/nli_scores_evidence_keypaper", paste0("granularity=", granularity)),
+      nli_active = nli_active
+    ),
+    format = "file",
+    deployment = "main"
   ),
 
   # Target 2h4' (QA): Phase 1 scoring QA report data — sibling to
@@ -770,14 +805,13 @@ list(
         paste0("nli_config=", nli_config_for_granularity(nli_configs_all, nli_granularities, nli_active)),
         paste0("assessment=", assessment$id)
       ),
-      # Bare reference, not part of the pattern below (incompatible branch
-      # shapes -- this is a per-claim dynamic branch, nli_scores_qa_data is
-      # per assessment x granularity) -- establishes the DAG dependency only,
-      # same convention build_llm_verification_parquet()'s own
-      # nli_scores_by_claim_evidence argument already uses. Makes the
-      # key-paper scoring chain run automatically as part of a bare
-      # tar_make(), instead of needing to be triggered explicitly.
-      nli_scores_keypaper_evidence = nli_scores_keypaper_evidence,
+      # Bare reference -- establishes the DAG dependency only, so the
+      # key-paper chain runs automatically as part of a bare tar_make()
+      # instead of needing to be triggered explicitly. Points at the
+      # CONSOLIDATED target, not the per-claim scoring branches: this reads
+      # the scored data off disk, so it must not start until the scratch
+      # files have been merged.
+      nli_scores_keypaper_evidence = nli_scores_keypaper_evidence_consolidated,
       # Resolved granularity's OWN uncertain_threshold -- not nli.active's --
       # same fine-grained-config reasoning as nli_config_for_granularity()
       # itself. Falls back to 0.60 (score_one_claim()'s own default) if the
@@ -926,7 +960,7 @@ list(
       llm_verification_user_prompt_file,
       llm_candidate_scope_parquet,
       granularity,
-      nli_scores_by_claim_evidence
+      nli_scores_evidence_consolidated
     ),
     pattern = map(assessment, nli_ready_evidence_parquet, llm_candidate_scope_parquet),
     format = "file",
@@ -978,7 +1012,7 @@ list(
       llm_verification_config,
       llm_verification_system_prompt_file,
       llm_verification_user_prompt_file,
-      nli_scores_keypaper_evidence
+      nli_scores_keypaper_evidence_consolidated
     ),
     pattern = map(assessment, nli_ready_evidence_keypaper_parquet),
     format = "file",

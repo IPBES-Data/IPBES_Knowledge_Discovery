@@ -173,12 +173,12 @@ build_nli_ready_evidence_keypaper_parquet <- function(
         "[NLI_READY_EV_KP %s] %s km=%s / bm=%s: no claims — skipping",
         assessment_id, now(), km_val, bm_val
       ))
-      return(FALSE)
+      return(NULL)
     }
 
     works <- keypapers_all |> dplyr::filter(id %in% pair$id)
     if (!nrow(works)) {
-      return(FALSE)
+      return(NULL)
     }
 
     for (mc in setdiff(scalar_cols, names(works))) works[[mc]] <- NA
@@ -220,19 +220,29 @@ build_nli_ready_evidence_keypaper_parquet <- function(
       nrow(works), nrow(sents_bm), nrow(out)
     ))
 
-    arrow::write_dataset(
-      dataset = out,
-      path = output_root,
-      format = "parquet",
-      partitioning = c("assessment", "km", "bm"),
-      existing_data_behavior = "overwrite"
-    )
-    TRUE
+    out
   }, mc.cores = workers)
 
-  if (!any(unlist(results))) {
+  # One write for the whole assessment rather than one per (km, bm). The
+  # key-paper corpus is small (single-digit MB per assessment), so collecting
+  # it costs nothing, while per-km/bm partitioning produced 343 files
+  # averaging ~25 KB -- most of which was parquet footer/schema overhead.
+  # km and bm stay ordinary columns; nothing filters this dataset on them at
+  # the Arrow level (the per-group work above subsets an in-memory frame).
+  results <- Filter(function(x) is.data.frame(x) && nrow(x), results)
+
+  if (!length(results)) {
     message(sprintf("[NLI_READY_EV_KP %s] no partitions written", assessment_id))
+    return(output_path)
   }
+
+  arrow::write_dataset(
+    dataset = dplyr::bind_rows(results),
+    path = output_root,
+    format = "parquet",
+    partitioning = "assessment",
+    existing_data_behavior = "overwrite"
+  )
 
   output_path
 }
